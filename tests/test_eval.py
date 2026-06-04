@@ -116,8 +116,10 @@ def test_load_golden_rejects_empty(tmp_path: Path) -> None:
 class _FakeRetriever:
     def __init__(self, ids: list[str]) -> None:
         self.ids = ids
+        self.seen_query: str | None = None
 
-    def retrieve(self, query: str, k: int) -> list[Chunk]:  # noqa: ARG002
+    def retrieve(self, query: str, k: int) -> list[Chunk]:
+        self.seen_query = query
         return [Chunk(id=i, text=f"text {i}", metadata={}) for i in self.ids[:k]]
 
 
@@ -129,9 +131,18 @@ class _FakeReranker:
 class _FakeGenerator:
     def __init__(self, answer: str) -> None:
         self.answer = answer
+        self.seen_query: str | None = None
 
     def generate(self, query: str, chunks: list[Chunk]) -> str:  # noqa: ARG002
+        self.seen_query = query
         return self.answer
+
+
+class _UppercaseTransform:
+    name = "uppercase"
+
+    def transform(self, query: str) -> str:
+        return query.upper()
 
 
 def test_evaluate_row_scores_each_stage() -> None:
@@ -153,6 +164,100 @@ def test_evaluate_row_scores_each_stage() -> None:
     assert result.faithfulness is None  # no judge
 
 
+def test_evaluate_row_transforms_retrieval_query_only() -> None:
+    # The retriever must see the TRANSFORMED query; the generator the ORIGINAL.
+    row = GoldenRow(
+        query="who?", expected_answer="grace bedell", expected_chunk_ids=["c1"]
+    )
+    retriever = _FakeRetriever(["c0", "c1", "c2"])
+    generator = _FakeGenerator("The answer is Grace Bedell.")
+    evaluate_row(
+        row,
+        retriever=retriever,
+        reranker=_FakeReranker(),
+        generator=generator,
+        k=3,
+        n=2,
+        query_transform=_UppercaseTransform(),
+    )
+    assert retriever.seen_query == "WHO?"  # transformed
+    assert generator.seen_query == "who?"  # original
+
+
+def test_evaluate_row_without_transform_uses_original_query() -> None:
+    # Back-compat: default query_transform=None retrieves with the original query.
+    row = GoldenRow(query="who?", expected_answer="x", expected_chunk_ids=["c1"])
+    retriever = _FakeRetriever(["c1"])
+    evaluate_row(
+        row,
+        retriever=retriever,
+        reranker=_FakeReranker(),
+        generator=_FakeGenerator("x"),
+        k=3,
+        n=2,
+    )
+    assert retriever.seen_query == "who?"
+
+
+def test_evaluate_row_populates_recall_cutoffs() -> None:
+    # c1 expected; sits at rank 2, so it is within both top-5 and top-10.
+    row = GoldenRow(
+        query="who?", expected_answer="grace bedell", expected_chunk_ids=["c1"]
+    )
+    result = evaluate_row(
+        row,
+        retriever=_FakeRetriever(["c0", "c1", "c2"]),
+        reranker=_FakeReranker(),
+        generator=_FakeGenerator("Grace Bedell."),
+        k=3,
+        n=2,
+    )
+    assert result.recall_at_5 == 1.0
+    assert result.recall_at_10 == 1.0
+
+    # Expected chunk absent from retrieved -> recall 0 at every cutoff.
+    miss = GoldenRow(query="q", expected_answer="a", expected_chunk_ids=["zzz"])
+    miss_result = evaluate_row(
+        miss,
+        retriever=_FakeRetriever(["c0", "c1", "c2"]),
+        reranker=_FakeReranker(),
+        generator=_FakeGenerator("a"),
+        k=3,
+        n=2,
+    )
+    assert miss_result.recall_at_5 == 0.0
+    assert miss_result.recall_at_10 == 0.0
+
+
+def test_evaluate_row_populates_latency_fields() -> None:
+    row = GoldenRow(query="q", expected_answer="a", expected_chunk_ids=["c1"])
+    result = evaluate_row(
+        row,
+        retriever=_FakeRetriever(["c0", "c1"]),
+        reranker=_FakeReranker(),
+        generator=_FakeGenerator("a"),
+        k=2,
+        n=2,
+    )
+    # Presence + non-negativity (exact timings are flaky, so we do not assert them).
+    for field in (
+        result.transform_ms,
+        result.retrieve_ms,
+        result.rerank_ms,
+        result.generate_ms,
+        result.query_latency_ms,
+    ):
+        assert field is not None
+        assert field >= 0.0
+    expected_total = (
+        result.transform_ms
+        + result.retrieve_ms
+        + result.rerank_ms
+        + result.generate_ms
+    )
+    assert result.query_latency_ms == pytest.approx(expected_total)
+
+
 def test_aggregate_means_and_skips_unset_judge() -> None:
     results = [
         QueryResult("q1", 1.0, 1.0, 1.0, True),
@@ -163,6 +268,28 @@ def test_aggregate_means_and_skips_unset_judge() -> None:
     assert summary["answer_correct"] == 0.5
     # Only one row has judge scores; mean over present values.
     assert summary["faithfulness"] == 0.5
+
+
+def test_aggregate_includes_recall_cutoffs_and_latency() -> None:
+    results = [
+        QueryResult(
+            "q1", 1.0, 1.0, 1.0, True,
+            recall_at_5=1.0, recall_at_10=1.0, query_latency_ms=10.0,
+        ),
+        QueryResult(
+            "q2", 0.0, 0.0, 0.0, False,
+            recall_at_5=0.0, recall_at_10=0.5, query_latency_ms=30.0,
+        ),
+    ]
+    summary = aggregate(results)
+    assert summary["recall_at_5"] == 0.5
+    assert summary["recall_at_10"] == 0.75
+    assert summary["query_latency_ms"] == 20.0
+    assert "query_latency_ms_p50" in summary
+    assert "query_latency_ms_p95" in summary
+    # p50 of [10, 30] is the midpoint; p95 sits near the high end.
+    assert summary["query_latency_ms_p50"] == pytest.approx(20.0)
+    assert summary["query_latency_ms_p95"] == pytest.approx(29.0)
 
 
 def test_result_to_dict_drops_unset_judge_fields() -> None:
