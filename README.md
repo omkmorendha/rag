@@ -40,16 +40,38 @@ config.yaml            selects which strategy per stage
 > See the build order in [`ARCHITECTURE.md`](./ARCHITECTURE.md#6-suggested-build-order).
 
 ```bash
-# 1. drop documents into data/
-# 2. ingest the corpus (build + persist the index)
+# 1. build the Markdown corpus
+uv run python scripts/prepare_data.py
+
+# 2. chunk the corpus using config.yaml
+uv run python scripts/chunk_corpus.py --write
+
+# 3. ingest the chunks (build + persist the index)
 python ingest.py
 
-# 3. query
+# 4. query
 python query.py "your question here"
 
-# 4. measure
+# 5. measure
 python evaluate.py
 ```
+
+## Chunking
+
+`config.yaml` selects the active chunker:
+
+```yaml
+chunker:
+  name: recursive
+  size: 256
+  overlap: 32
+```
+
+Available strategies:
+
+- `fixed` — fixed whitespace-token windows; useful as a baseline.
+- `recursive` — paragraph/sentence-aware windows with token fallback; default for Markdown.
+- `sentence_window` — overlapping sentence groups for smaller, precise retrieval units.
 
 ## Status
 

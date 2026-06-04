@@ -99,6 +99,8 @@ context.
 - `fixed` — N tokens, fixed overlap. Truncates sentences; baseline only.
 - `recursive` — split on document structure (heading → paragraph → sentence). Default for
   Markdown.
+- `sentence_window` — overlapping groups of sentences. Useful when you want smaller,
+  precise retrieval units before adding parent-document expansion.
 - `semantic` — split where embedding similarity drops. Best quality, most compute.
 - See §4 for sentence-window / parent-document (decoupling retrieval unit from output unit).
 

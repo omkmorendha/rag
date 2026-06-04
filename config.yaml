@@ -1,0 +1,11 @@
+# Swap chunking strategies by changing `chunker.name`.
+#
+# Available chunkers:
+#   fixed            size/overlap whitespace-token windows; useful as a baseline
+#   recursive        paragraph/sentence-aware windows; default for Markdown
+#   sentence_window  overlapping sentence groups; useful for precise retrieval units
+
+chunker:
+  name: recursive
+  size: 256
+  overlap: 32
