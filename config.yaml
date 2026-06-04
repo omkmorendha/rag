@@ -22,3 +22,21 @@ embedder:
 #   faiss_flat       exact (brute-force) inner-product search; baseline
 indexer:
   name: faiss_flat
+
+# Over-retrieve here (k≈50); the reranker compresses the candidates afterwards.
+#
+# Available retrievers:
+#   dense            semantic search over the vector index; baseline
+retriever:
+  name: dense
+  k: 50
+
+# Swap reranking strategies by changing `reranker.name`.
+#
+# Available rerankers:
+#   noop             pass candidates through (optional top_n cap); for the slice
+#   cross_encoder    local cross-encoder re-scoring; the first real quality jump
+reranker:
+  name: cross_encoder
+  model: BAAI/bge-reranker-base
+  top_n: 8
