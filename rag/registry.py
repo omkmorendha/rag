@@ -15,6 +15,12 @@ from rag.config import load_config, stage_config
 from rag.embedders import Embedder, HashingEmbedder, SentenceTransformerEmbedder
 from rag.generator import AnthropicGenerator, Generator
 from rag.indexers import FaissFlatIndexer, Index, Indexer
+from rag.query_transform import (
+    PassthroughTransform,
+    QueryTransform,
+    RewriteTransform,
+    StepBackTransform,
+)
 from rag.rerankers import CrossEncoderReranker, NoopReranker, Reranker
 from rag.retrievers import DenseRetriever, Retriever
 
@@ -31,6 +37,12 @@ EMBEDDERS = {
 
 INDEXERS = {
     FaissFlatIndexer.name: FaissFlatIndexer,
+}
+
+QUERY_TRANSFORMS = {
+    PassthroughTransform.name: PassthroughTransform,
+    RewriteTransform.name: RewriteTransform,
+    StepBackTransform.name: StepBackTransform,
 }
 
 RETRIEVERS = {
@@ -105,6 +117,28 @@ def build_indexer(
     params = {key: value for key, value in indexer_config.items() if key != "name"}
     params.setdefault("embedder_model", embedder_model)
     return INDEXERS[name](**params)
+
+
+def build_query_transform(
+    config: dict[str, Any] | None = None, *, path: Path | None = None
+) -> QueryTransform:
+    """Build the configured query-transform strategy.
+
+    Defaults to :class:`~rag.query_transform.PassthroughTransform` (the identity baseline)
+    when the ``query_transform`` block is absent, so an unconfigured pipeline retrieves
+    exactly as it did before this stage existed.
+    """
+    loaded = load_config(path or Path("config.yaml")) if config is None else config
+    transform_config = stage_config(loaded, "query_transform")
+    name = transform_config.get("name", PassthroughTransform.name)
+    if not isinstance(name, str):
+        raise ValueError("query_transform.name must be a string")
+    if name not in QUERY_TRANSFORMS:
+        available = ", ".join(sorted(QUERY_TRANSFORMS))
+        raise ValueError(f"unknown query_transform {name!r}; available: {available}")
+
+    params = {key: value for key, value in transform_config.items() if key != "name"}
+    return QUERY_TRANSFORMS[name](**params)
 
 
 def build_retriever(

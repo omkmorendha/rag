@@ -23,6 +23,16 @@ embedder:
 indexer:
   name: faiss_flat
 
+# Rewrite the query before retrieval. Retrieval uses the transformed query; the
+# generator still answers the ORIGINAL question.
+#
+# Available query transforms: passthrough | rewrite | step_back
+#   passthrough      return the query unchanged; honest baseline
+#   rewrite          LLM expands abbreviations / adds entities for dense retrieval (needs API)
+#   step_back        LLM generalizes to a broader question for background (needs API)
+query_transform:
+  name: passthrough
+
 # Over-retrieve here (k≈50); the reranker compresses the candidates afterwards.
 #
 # Available retrievers:
