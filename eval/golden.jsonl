@@ -1,0 +1,10 @@
+{"query": "Who suggested Lincoln grow a beard?", "expected_answer": "11-year-old Grace Bedell", "expected_chunk_ids": ["passage:382:recursive:0"], "source_passage_id": 382, "benchmark_qid": 12}
+{"query": "Which county was Lincoln born in?", "expected_answer": "Hardin County", "expected_chunk_ids": ["passage:282:recursive:0"], "source_passage_id": 282, "benchmark_qid": 24}
+{"query": "Who was the general in charge at the Battle of Antietam?", "expected_answer": "General McClellan", "expected_chunk_ids": ["passage:344:recursive:0"], "source_passage_id": 344, "benchmark_qid": 32}
+{"query": "What did The Legal Tender Act of 1862 establish?", "expected_answer": "the United States Note, the first paper currency in United States history", "expected_chunk_ids": ["passage:361:recursive:0"], "source_passage_id": 361, "benchmark_qid": 10}
+{"query": "What trail did Lincoln use a Farmers' Almanac in? ", "expected_answer": "he defended William \"Duff\" Armstrong", "expected_chunk_ids": ["passage:305:recursive:0"], "source_passage_id": 305, "benchmark_qid": 49}
+{"query": "What are the three sections of a beetle?", "expected_answer": "the head, the thorax, and the abdomen", "expected_chunk_ids": ["passage:2383:recursive:0"], "source_passage_id": 2383, "benchmark_qid": 162}
+{"query": "Which state were Coolidge born in?", "expected_answer": "Plymouth, Windsor County, Vermont", "expected_chunk_ids": ["passage:402:recursive:0"], "source_passage_id": 402, "benchmark_qid": 231}
+{"query": "What fraternity was Coolidge a member of?", "expected_answer": "Phi Gamma Delta", "expected_chunk_ids": ["passage:405:recursive:0"], "source_passage_id": 405, "benchmark_qid": 247}
+{"query": "In 1905 Coolidge met and married whom?", "expected_answer": "Grace Anna Goodhue", "expected_chunk_ids": ["passage:407:recursive:0"], "source_passage_id": 407, "benchmark_qid": 249}
+{"query": "What is one significant non-official language?", "expected_answer": "Chinese.", "expected_chunk_ids": ["passage:820:recursive:0"], "source_passage_id": 820, "benchmark_qid": 290}

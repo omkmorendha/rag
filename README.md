@@ -164,6 +164,30 @@ Available strategies:
   (a `.env` is read by the scripts). The static grounding prompt is prompt-cached; only the
   per-query chunks vary.
 
+## Evaluation
+
+`evaluate.py` runs the golden set (`eval/golden.jsonl`) through the query path and **scores
+each stage separately** — the whole point of the swappable design: change a stage in
+`config.yaml`, re-run, read the delta.
+
+```bash
+uv run python evaluate.py                      # deterministic, free, offline-ish
+uv run python evaluate.py --no-generate        # retrieval + rerank only; no API at all
+uv run python evaluate.py --judge              # add LLM-as-judge generation scoring
+uv run python evaluate.py --json runs/base.json # dump full results for diffing
+```
+
+Metrics:
+
+- **Retrieval** — recall@k, MRR (are the expected chunk ids retrieved, and how high?).
+- **Rerank** — precision@n (how clean is the top-n after reranking?).
+- **Generation** — `answer_correct` (deterministic substring check, always on) plus, behind
+  `--judge`, LLM-as-judge **faithfulness** and **answer_relevance** (the only generation
+  signal that survives paraphrase).
+
+The golden set's `expected_chunk_ids` are **derived after ingest** and coupled to the active
+chunker, so regenerate it with `scripts/derive_golden.py` whenever the chunker changes.
+
 ## Status
 
 Early scaffolding. Building the first vertical slice (Markdown → recursive chunk → local
