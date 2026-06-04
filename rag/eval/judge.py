@@ -90,12 +90,19 @@ class AnthropicJudge:
 
 
 def _parse_score(text: str) -> JudgeScore:
-    """Extract the JSON score object from the judge's reply, clamped to [0, 1]."""
+    """Extract the JSON score object from the judge's reply, clamped to [0, 1].
+
+    Uses ``raw_decode`` from the first ``{`` so a reply with trailing prose or a second
+    JSON object (the model occasionally emits one object per line) parses to the *first*
+    complete object rather than failing on "Extra data".
+    """
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1:
+    if start == -1:
         raise ValueError(f"judge did not return a JSON object: {text!r}")
-    data = json.loads(text[start : end + 1])
+    try:
+        data, _ = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"judge did not return valid JSON: {text!r}") from exc
     return JudgeScore(
         faithfulness=_clamp(float(data["faithfulness"])),
         answer_relevance=_clamp(float(data["answer_relevance"])),

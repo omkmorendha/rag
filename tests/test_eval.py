@@ -82,6 +82,17 @@ def test_parse_score_extracts_and_clamps() -> None:
     assert clamped.answer_relevance == 0.0
 
 
+def test_parse_score_takes_first_of_two_objects() -> None:
+    # The judge occasionally emits one JSON object per line; we take the first complete
+    # object rather than spanning to the last "}" (which would fail on "Extra data").
+    text = (
+        '{"faithfulness": 1.0, "answer_relevance": 0.5}\n'
+        '{"faithfulness": 0.0, "answer_relevance": 0.0}'
+    )
+    score = _parse_score(text)
+    assert score == JudgeScore(faithfulness=1.0, answer_relevance=0.5)
+
+
 def test_parse_score_rejects_non_json() -> None:
     with pytest.raises(ValueError, match="JSON object"):
         _parse_score("no json here")
