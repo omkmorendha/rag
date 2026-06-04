@@ -9,3 +9,9 @@ chunker:
   name: recursive
   size: 256
   overlap: 32
+
+embedder:
+  name: local
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 32
+  normalize_embeddings: true

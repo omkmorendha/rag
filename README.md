@@ -46,13 +46,16 @@ uv run python scripts/prepare_data.py
 # 2. chunk the corpus using config.yaml
 uv run python scripts/chunk_corpus.py --write
 
-# 3. ingest the chunks (build + persist the index)
+# 3. encode chunks using config.yaml
+uv run python scripts/embed_chunks.py --write
+
+# 4. ingest the encoded chunks (build + persist the index)
 python ingest.py
 
-# 4. query
+# 5. query
 python query.py "your question here"
 
-# 5. measure
+# 6. measure
 python evaluate.py
 ```
 
@@ -72,6 +75,23 @@ Available strategies:
 - `fixed` — fixed whitespace-token windows; useful as a baseline.
 - `recursive` — paragraph/sentence-aware windows with token fallback; default for Markdown.
 - `sentence_window` — overlapping sentence groups for smaller, precise retrieval units.
+
+## Embedding
+
+`config.yaml` also selects the encoder shared by ingest and query:
+
+```yaml
+embedder:
+  name: local
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 32
+  normalize_embeddings: true
+```
+
+Available strategies:
+
+- `local` — sentence-transformers bi-encoder for production retrieval.
+- `hashing` — deterministic lightweight vectors for tests and smoke runs.
 
 ## Status
 
