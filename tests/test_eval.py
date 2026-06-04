@@ -175,6 +175,23 @@ def test_evaluate_row_scores_each_stage() -> None:
     assert result.faithfulness is None  # no judge
 
 
+def test_evaluate_row_skipped_generation_leaves_answer_correct_unset() -> None:
+    # An empty answer (--no-generate / _NullGenerator) must not score as a 0.0 substring
+    # miss; answer_correct stays None ("not measured") and aggregate omits it.
+    row = GoldenRow(query="who?", expected_answer="grace bedell", expected_chunk_ids=["c1"])
+    result = evaluate_row(
+        row,
+        retriever=_FakeRetriever(["c1"]),
+        reranker=_FakeReranker(),
+        generator=_FakeGenerator(""),  # no answer
+        k=3,
+        n=2,
+    )
+    assert result.answer_correct is None
+    summary = aggregate([result])
+    assert "answer_correct" not in summary
+
+
 def test_evaluate_row_transforms_retrieval_query_only() -> None:
     # The retriever must see the TRANSFORMED query; the generator the ORIGINAL.
     row = GoldenRow(

@@ -57,7 +57,7 @@ class QueryResult:
     recall_at_k: float
     mrr: float
     precision_at_n: float
-    answer_correct: bool
+    answer_correct: bool | None  # None when generation was skipped (--no-generate)
     faithfulness: float | None = None
     answer_relevance: float | None = None
     # Component 2: extra recall cutoffs (computed off the same retrieved id list).
@@ -111,12 +111,17 @@ def evaluate_row(
 
     query_latency_ms = transform_ms + retrieve_ms + rerank_ms + generate_ms
 
+    # An empty answer means generation was skipped (--no-generate / _NullGenerator);
+    # scoring a substring match against "" would report a misleading 0.0, so leave
+    # answer_correct unset (None → "not measured") in that case.
+    answer_correct = metrics.answer_contains(answer, row.expected_answer) if answer else None
+
     result = QueryResult(
         query=row.query,
         recall_at_k=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, k),
         mrr=metrics.mrr(retrieved_ids, row.expected_chunk_ids),
         precision_at_n=metrics.precision_at_n(reranked_ids, row.expected_chunk_ids, n),
-        answer_correct=metrics.answer_contains(answer, row.expected_answer),
+        answer_correct=answer_correct,
         recall_at_5=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, 5),
         recall_at_10=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, 10),
         transform_ms=transform_ms,
@@ -164,8 +169,13 @@ def aggregate(results: list[QueryResult]) -> dict[str, float]:
         "recall_at_k": mean([r.recall_at_k for r in results]),
         "mrr": mean([r.mrr for r in results]),
         "precision_at_n": mean([r.precision_at_n for r in results]),
-        "answer_correct": mean([1.0 if r.answer_correct else 0.0 for r in results]),
     }
+
+    # answer_correct is None when generation was skipped; only average measured rows so a
+    # --no-generate run reports no answer_correct rather than a misleading 0.0.
+    answered = [r.answer_correct for r in results if r.answer_correct is not None]
+    if answered:
+        summary["answer_correct"] = mean([1.0 if ok else 0.0 for ok in answered])
 
     # Component 2: extra recall cutoffs (skip rows where they were not computed).
     recall5 = [r.recall_at_5 for r in results if r.recall_at_5 is not None]

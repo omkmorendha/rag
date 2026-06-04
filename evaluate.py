@@ -162,7 +162,8 @@ def _print_report(results: list[QueryResult], *, k: int, n: int, judged: bool) -
     for r in results:
         line = (
             f"  recall@{k}={r.recall_at_k:.2f}  mrr={r.mrr:.2f}  "
-            f"p@{n}={r.precision_at_n:.2f}  ans={'Y' if r.answer_correct else 'N'}"
+            f"p@{n}={r.precision_at_n:.2f}  "
+            f"ans={'—' if r.answer_correct is None else ('Y' if r.answer_correct else 'N')}"
         )
         if judged and r.faithfulness is not None:
             line += f"  faith={r.faithfulness:.2f}  rel={r.answer_relevance:.2f}"

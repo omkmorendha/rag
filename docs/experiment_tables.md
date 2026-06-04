@@ -9,14 +9,14 @@ Each variant is the base config with one stage overridden, scored over the golde
 
 | variant | recall@5 | recall@10 | recall@k | MRR | p@n | ans_correct | faith | relevance | lat p50/p95 |
 |---|---|---|---|---|---|---|---|---|---|
-| ablation_retrieve_only | 0.737 | 0.747 | 0.848 | 0.583 | 0.106 | 0.000 | — | — | 8/28 |
-| ablation_retrieve_rerank | 0.737 | 0.747 | 0.848 | 0.583 | 0.087 | 0.000 | — | — | 932/1200 |
+| ablation_retrieve_only | 0.737 | 0.747 | 0.848 | 0.583 | 0.106 | — | — | — | 6/20 |
+| ablation_retrieve_rerank | 0.737 | 0.747 | 0.848 | 0.583 | 0.087 | — | — | — | 865/1193 |
 | ablation_full | 0.737 | 0.747 | 0.848 | 0.583 | 0.087 | 0.485 | 0.991 | 0.748 | 2906/5081 |
 
 _Baseline: `ablation_retrieve_only`. Deltas below are vs. this row._
 
-- **ablation_retrieve_rerank**: recall@5 +0.000, MRR +0.000, ans +0.000
-- **ablation_full**: recall@5 +0.000, MRR +0.000, ans +0.485
+- **ablation_retrieve_rerank**: recall@5 +0.000, MRR +0.000
+- **ablation_full**: recall@5 +0.000, MRR +0.000
 
 ## chunker
 
@@ -54,6 +54,22 @@ _Baseline: `qt_passthrough`. Deltas below are vs. this row._
 
 - **qt_rewrite**: recall@5 -0.015, MRR -0.102, ans +0.061, faith -0.006
 - **qt_step_back**: recall@5 -0.242, MRR -0.177, ans +0.000, faith -0.032
+
+## per-stage latency (mean ms)
+
+| variant | transform | retrieve | rerank | generate | total |
+|---|---|---|---|---|---|
+| ablation_retrieve_only | 0 | 11 | 0 | 0 | 11 |
+| ablation_retrieve_rerank | 0 | 12 | 914 | 0 | 926 |
+| ablation_full | 0 | 58 | 1000 | 2201 | 3258 |
+| chunker_fixed | 0 | 63 | 987 | 2261 | 3311 |
+| chunker_recursive | 0 | 60 | 967 | 1934 | 2961 |
+| chunker_sentence_window | 0 | 64 | 584 | 1605 | 2253 |
+| reranker_noop | 0 | 49 | 0 | 1910 | 1959 |
+| reranker_cross_encoder | 0 | 53 | 937 | 1788 | 2779 |
+| qt_passthrough | 0 | 49 | 910 | 2135 | 3095 |
+| qt_rewrite | 1411 | 53 | 952 | 2011 | 4427 |
+| qt_step_back | 1276 | 68 | 989 | 2077 | 4410 |
 
 ---
 

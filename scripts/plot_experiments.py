@@ -141,7 +141,15 @@ def plot_family(
 
 
 def plot_latency(variants: dict[str, Any], out_dir: Path) -> Path | None:
-    """Per-query p50/p95 latency across all variants (log y — values span ~10ms..3s)."""
+    """Per-query latency across variants, drawn twice.
+
+    Two panels because no single y-axis is honest here: values span ~8 ms (retrieve-only)
+    to ~4.5 s (judged + transform). A **linear** panel (left) shows the true cost
+    structure — the headline finding that rerank and generation dominate — with the ms
+    value labelled on each bar so the magnitudes are unambiguous. A **log** panel (right)
+    keeps every variant visible for cross-variant comparison. Reading only the log panel
+    would visually flatten the 360× spread the linear panel exists to show.
+    """
     rows: list[tuple[str, float, float]] = []
     for names in FAMILIES.values():
         for name, summary in _summaries(variants, names):
@@ -152,20 +160,39 @@ def plot_latency(variants: dict[str, Any], out_dir: Path) -> Path | None:
     if not rows:
         return None
 
-    fig, ax = plt.subplots(figsize=(max(7, len(rows) * 0.9), 4.2))
+    fig, (ax_lin, ax_log) = plt.subplots(
+        1, 2, figsize=(max(12, len(rows) * 1.3), 4.6)
+    )
     x = range(len(rows))
     width = 0.4
-    ax.bar([i - width / 2 for i in x], [r[1] for r in rows], width, label="p50",
-           color=_COLORS[0])
-    ax.bar([i + width / 2 for i in x], [r[2] for r in rows], width, label="p95",
-           color=_COLORS[1])
-    ax.set_yscale("log")
-    ax.set_ylabel("query latency (ms, log)")
-    ax.set_xticks(list(x))
-    ax.set_xticklabels([_short(r[0]) for r in rows], rotation=40, ha="right", fontsize=8)
-    ax.set_title("per-query latency: p50 / p95 across variants")
-    ax.legend()
-    ax.grid(axis="y", linestyle=":", alpha=0.5, which="both")
+    labels = [_short(r[0]) for r in rows]
+
+    # Linear panel: p50 only, value-labelled — the honest cost-structure view.
+    bars = ax_lin.bar(list(x), [r[1] for r in rows], width=0.6, color=_COLORS[0])
+    for rect, (_, p50, _) in zip(bars, rows, strict=True):
+        ax_lin.annotate(
+            f"{p50:.0f}", (rect.get_x() + rect.get_width() / 2, p50),
+            ha="center", va="bottom", fontsize=7,
+        )
+    ax_lin.set_ylabel("p50 query latency (ms, linear)")
+    ax_lin.set_xticks(list(x))
+    ax_lin.set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
+    ax_lin.set_title("cost structure (linear) — rerank + generate dominate")
+    ax_lin.grid(axis="y", linestyle=":", alpha=0.5)
+
+    # Log panel: p50 + p95, every variant visible across the 8ms–4.5s range.
+    ax_log.bar([i - width / 2 for i in x], [r[1] for r in rows], width, label="p50",
+               color=_COLORS[0])
+    ax_log.bar([i + width / 2 for i in x], [r[2] for r in rows], width, label="p95",
+               color=_COLORS[1])
+    ax_log.set_yscale("log")
+    ax_log.set_ylabel("query latency (ms, log)")
+    ax_log.set_xticks(list(x))
+    ax_log.set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
+    ax_log.set_title("p50 / p95 across variants (log)")
+    ax_log.legend()
+    ax_log.grid(axis="y", linestyle=":", alpha=0.5, which="both")
+
     fig.tight_layout()
     path = out_dir / "latency.png"
     fig.savefig(path, dpi=130)

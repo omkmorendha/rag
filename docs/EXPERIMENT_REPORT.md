@@ -6,36 +6,57 @@ available today across four experiment families — an **ablation ladder**, a **
 sweep, a **reranker** sweep, and a **query-transform** sweep — scoring every stage
 separately.
 
-**The headline is uncomfortable and that is the point:** on this corpus, the two techniques
-the architecture doc expected to help most — the cross-encoder reranker and query
-transforms — *do not help, and mostly hurt*. The harness is doing its job: it tells you what
-actually moved the numbers here, not what should in general.
+**The headline, stated carefully:** on this corpus, the two techniques the architecture doc
+expected to help most — the cross-encoder reranker and query transforms — **add latency
+without buying measurable quality**, and degrade the *deterministic* retrieval-ranking
+metrics (MRR, precision@n). The harness is doing its job: it tells you what actually moved
+the numbers here, not what should in general. We are deliberate below about which findings
+are **established** (deterministic, reproducible) versus **directional** (generation-judge
+metrics inside the measured noise) — see §5.
 
 ## How to read this (and what NOT to over-read)
 
 - **Corpus + golden set:** `rag-mini-wikipedia`, 3,200 short single-fact passages. Golden
   set = **33 hand-verified queries** (29 single-passage, 4 multi-passage). This is small.
   Treat every number as directional, not decisive.
-- **The noise floor is large.** Four variants in this sweep run a *byte-identical* query
-  pipeline (recursive chunk → cross-encoder rerank → passthrough → Haiku). Their
-  `answer_correct` scores span **0.394–0.485 — a 0.091 spread that is pure generation +
-  judge non-determinism**. So:
-  > **Any `answer_correct` delta below ~0.09 is indistinguishable from noise.** Do not read
-  > it as a technique effect. The tables below are annotated where this applies.
+- **The generation noise floor is large — and it is a floor, not a bound.** Four variants in
+  this sweep run an **identical *query-time* pipeline** (cross-encoder rerank → passthrough
+  → Haiku generation + judge): `ablation_full`, `chunker_recursive`, `reranker_cross_encoder`,
+  and `qt_passthrough`. (Their *ingests* differ — `chunker_recursive` re-chunks/re-embeds —
+  but all three reuse-ingest variants share one index and `chunker_recursive` re-derives the
+  same recursive chunks, so the generator sees the same top-8 in practice.) Their
+  `answer_correct` scores are **{0.485, 0.424, 0.394, 0.394} — a 0.091 spread that is almost
+  entirely generation + judge non-determinism**. Critically, **0.091 is the observed range
+  of four points, not a statistical confidence bound** — the true run-to-run sd is unknown
+  (single run each), so the real floor is *at least* this wide. So:
+  > **Treat any `answer_correct` delta on the order of ~0.09 or less as noise, not a
+  > technique effect.** A delta only modestly above it (e.g. −0.12) is suggestive, not
+  > established — it needs repeated runs with reported variance to confirm.
+- **`precision@n` has its own granularity floor.** At n=8 over N=33 queries, one
+  relevant-chunk flip is ≈ `1/(8·33)` ≈ **0.004**, and most golden rows have a single
+  expected chunk, so realistic p@n moves are coarse. A p@n difference of ~0.02 (e.g. the
+  reranker's 0.106 → 0.087) is **under two chunks' worth across the whole set** — directional
+  at best, not a clean effect.
 - **`answer_correct` is a brittle substring check** (`expected_answer.lower() in
   answer.lower()`), so it under-counts correct paraphrases. `faithfulness` and
-  `answer_relevance` (LLM-judge) are the trustworthy generation signals.
+  `answer_relevance` (LLM-judge) are the better generation signals — but they are *also*
+  single-run and noisy; only the retrieval/rerank metrics are deterministic.
 - **`recall@k` (k=50) is saturated** at ~0.85 — over-retrieving 50 of 3,200 chunks almost
   always catches the gold one. **Read `recall@5` and `MRR` for retrieval deltas.**
 - **Latency** is per-query wall-clock **p50/p95 in ms**, steady-state (cold model loads are
-  warmed off first). p50/p95 are reported because the mean is cold-load-sensitive.
-- **Reproducibility:** retrieval/rerank metrics are deterministic; generation, judge, and
-  the LLM query transforms vary run-to-run. Re-running will shift generation numbers by up
-  to the ~0.09 noise floor.
+  warmed off first). p50/p95 are reported because the mean is cold-load-sensitive. The
+  **latency chart is two panels** (`figures/latency.png`): a *linear* panel for the true
+  cost magnitudes and a *log* panel for cross-variant visibility — read the linear one for
+  the cost story. A per-stage breakdown (transform/retrieve/rerank/generate ms) is in
+  `experiment_tables.md` under "per-stage latency".
+- **Reproducibility:** retrieval/rerank metrics are deterministic and will reproduce exactly;
+  generation, judge, and the LLM query transforms vary run-to-run. **Each variant is a single
+  run** — no variance is reported, which is the report's main statistical limitation.
 
-Full machine-readable numbers: `vectorstore/experiments/results.json`. Auto-generated
-tables: `vectorstore/experiments/report.md`. Regenerate everything with
-`uv run python scripts/run_experiments.py` then `uv run python scripts/plot_experiments.py`.
+Full machine-readable numbers: `docs/experiment_results.json`. Auto-generated tables
+(including the per-stage latency breakdown): `docs/experiment_tables.md`. These are tracked
+copies of the runner's outputs under the gitignored `vectorstore/experiments/`. Regenerate
+with `uv run python scripts/run_experiments.py` then `uv run python scripts/plot_experiments.py`.
 
 ---
 
@@ -48,22 +69,28 @@ at a time.
 
 | rung | recall@5 | MRR | p@n | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
-| retrieve only | 0.737 | 0.583 | **0.106** | — | — | — | **8 / 28** |
-| + rerank | 0.737 | 0.583 | 0.087 | — | — | — | 932 / 1200 |
+| retrieve only | 0.737 | 0.583 | 0.106 | — | — | — | **6 / 20** |
+| + rerank | 0.737 | 0.583 | 0.087 | — | — | — | 865 / 1193 |
 | + generate (full) | 0.737 | 0.583 | 0.087 | 0.485 | 0.991 | 0.748 | 2906 / 5081 |
+
+(`ans_correct`/`faith`/`relevance` are "—" for the first two rungs because `--no-generate`
+ran no generation — there is no answer to score, *not* a score of zero.)
 
 **Reading.**
 - **Retrieval already does the heavy lifting.** recall@5 = 0.74, MRR = 0.58 with nothing but
   dense search. The gold chunk is usually found and usually ranked high.
-- **Reranking moved precision@n the *wrong* way** (0.106 → 0.087) — see §3; it is not a
-  win on this corpus.
+- **Reranking nudged precision@n down** (0.106 → 0.087) — about half a relevant-chunk per
+  the whole set, so directional, not decisive (see §3 and the p@n granularity floor above).
+  Either way it is not a win here.
 - **Generation is the expensive, valuable rung:** faithfulness 0.99, relevance 0.75 — the
-  grounding prompt works. But it costs **~2 seconds** (8 ms → 2.9 s p50), ~360× the
-  retrieve-only latency.
+  grounding prompt works. But it dominates latency: ~6 ms retrieve-only → ~2.9 s p50, i.e.
+  roughly **two orders of magnitude** (a single-run ratio; treat the exact multiple loosely).
 
-> The ablation's real lesson here: **almost all the cost is in rerank + generate, and on
-> this corpus rerank buys nothing measurable.** A retrieve-only + generate pipeline would be
-> ~1 s faster per query at no measured quality loss.
+> The ablation's real lesson here: **the cost is almost entirely rerank + generate, and on
+> this corpus rerank buys nothing measurable on any metric.** A retrieve-only + generate
+> pipeline would be ~0.9 s faster per query (the rerank stage) at no *measured* quality loss.
+> Latency magnitudes: read the **linear** panel of `figures/latency.png` (the log panel
+> flattens this staircase) and the per-stage table in `experiment_tables.md`.
 
 ---
 
@@ -85,8 +112,8 @@ ground truth must be regenerated per chunker — otherwise retrieval scores garb
 - **fixed ≈ recursive on retrieval.** Identical recall@5/@10, MRR within 0.001. On a corpus
   of short, already-clean passages, structure-aware splitting has nothing to exploit — the
   recursive chunker's advantage shows up on long, headed documents, which this corpus lacks.
-  The `ans_correct` gap (0.455 vs 0.424) is **below the 0.09 noise floor → not a real
-  difference.**
+  The `ans_correct` gap (0.455 vs 0.424, Δ 0.031) is **well inside the ~0.09 noise floor →
+  not a real difference**, and is single-run anyway.
 - **sentence_window makes a genuine trade.** recall@5 drops hard (0.74 → 0.54) — smaller
   units mean the gold sentence-window is more often outside the top-5 — but precision@n
   *rises* (0.087 → 0.136), because the windows that do surface are tighter. This is the
@@ -103,30 +130,39 @@ ground truth must be regenerated per chunker — otherwise retrieval scores garb
 
 noop vs cross-encoder, holding retrieval and generation identical (reuses one shared index).
 The architecture doc calls the cross-encoder "usually the biggest quality jump per line of
-code." **Here it is a regression.**
+code." **Here it does not help — and the deterministic metrics say it slightly hurts.**
 
 ![reranker](figures/reranker.png)
 
 | reranker | recall@5 | MRR | p@n | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
-| noop | 0.737 | 0.583 | **0.106** | **0.515** | 0.991 | **0.789** | **1779 / 3238** |
+| noop | 0.737 | 0.583 | 0.106 | 0.515 | 0.991 | 0.789 | **1779 / 3238** |
 | cross_encoder | 0.737 | 0.583 | 0.087 | 0.394 | 0.995 | 0.744 | 2720 / 3759 |
 
-**Reading — and the honest caveat.**
-- Retrieval is identical by construction (same candidates), so recall/MRR don't move.
-- The cross-encoder **lowers precision@n (0.106 → 0.087) and relevance (0.789 → 0.744)** and
-  **adds ~940 ms** of latency. The `ans_correct` drop (0.515 → 0.394, −0.121) is the one
-  generation delta that clears the noise floor — but only just (floor ≈ 0.09), so read it as
-  "a real but modest regression," not a cliff.
+**Reading — with the noise made explicit.**
+- Retrieval is identical by construction (same candidates), so recall/MRR don't move. The
+  **deterministic** effects are: precision@n down (0.106 → 0.087, ~half a chunk over the set)
+  and **~940 ms added latency**. The latency cost is real and reproducible; the p@n move is
+  directional (within the p@n granularity floor).
+- The **generation** deltas are *not* established. noop's `ans_correct` 0.515 is the single
+  **highest** generation score anywhere in the sweep, and the cross-encoder's own
+  `ans_correct` ranges **0.394–0.485 across its three identical-pipeline appearances**
+  (`reranker_cross_encoder` 0.394, `qt_passthrough` 0.394, `ablation_full` 0.485). So the
+  "−0.121 drop" is largely **noop catching a high draw and cross-encoder a low one** from
+  overlapping noisy distributions — not a clean regression. relevance (0.789 → 0.744) is one
+  single run each and similarly inside the noise. Confirming a real generation effect would
+  need repeated runs with reported variance.
 - **Why would a reranker hurt?** On short single-fact passages the bi-encoder already ranks
   the gold chunk near the top; the cross-encoder re-scores the top-50 on `(query, passage)`
   surface relevance and sometimes promotes a topically-similar-but-wrong passage above the
   gold one, pushing the answer out of the top-8 the generator sees. The reranker is built
   for noisy, long-tail candidate sets; it has little to fix and some room to break here.
 
-> **On this corpus, the cross-encoder reranker costs latency and quality.** That is a
-> corpus-specific result, not a universal one — but it is exactly the kind of finding the
-> harness exists to surface, and it would have been invisible without per-stage scoring.
+> **On this corpus, the cross-encoder reranker costs ~940 ms and buys no measurable
+> quality** (precision@n drifts down; generation deltas are inside the noise). That is a
+> corpus-specific result, not a universal one — but "a reranker that does not earn its
+> latency here" is exactly the kind of finding the harness exists to surface, and it would
+> have been invisible without per-stage scoring.
 
 ---
 
@@ -141,18 +177,27 @@ still answers the original question.
 | transform | recall@5 | recall@10 | MRR | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
 | passthrough | 0.737 | 0.747 | 0.583 | 0.394 | 0.995 | 0.738 | 2840 / 6035 |
-| rewrite | 0.722 | 0.747 | 0.481 | 0.455 | 0.989 | 0.739 | 4259 / 5603 |
+| rewrite † | 0.722 | 0.747 | 0.481 | 0.455 | 0.989 | 0.739 | 4259 / 5603 |
 | step_back | **0.495** | 0.616 | **0.405** | 0.394 | 0.964 | 0.723 | **4525 / 5921** |
 
+† `rewrite` was executed in a **separate re-run** from the other 10 variants (its first run
+hit a judge JSON-parsing bug, now fixed). Given the run-to-run generation noise, its
+generation numbers are even less directly comparable to the others than the within-sweep
+variants are.
+
 **Reading.**
-- **Both transforms hurt retrieval ranking.** rewrite drops MRR 0.583 → 0.481; step_back
-  drops it harder (→ 0.405) and craters recall@5 (0.74 → 0.50). Rewriting a short factual
+- **Both transforms hurt retrieval ranking — this is the deterministic, established part.**
+  rewrite drops MRR 0.583 → 0.481; step_back drops it harder (→ 0.405) and craters recall@5
+  (0.74 → 0.50). These are reproducible (retrieval is deterministic given the rewritten
+  query — though the *rewrite itself* is an LLM call and will vary). Rewriting a short factual
   question ("Which county was Lincoln born in?") into a broader or synonym-expanded query
   moves the *query* embedding away from the terse passage that answers it — the opposite of
   the asymmetry these techniques fix on verbose/conversational queries.
-- **Generation barely moves** and stays inside the noise floor (rewrite's ans +0.061,
-  step_back's ans ±0.000 — both ≤ floor). relevance/faithfulness are flat-to-slightly-down.
-- **They add ~1.4–1.7 s of latency** (an extra LLM call per query) for no upside here.
+- **Generation does not move outside the noise** (rewrite's ans +0.061, step_back's ans
+  ±0.000 — both ≤ the ~0.09 floor). relevance/faithfulness are flat-to-slightly-down, single
+  run each. No generation conclusion is established here.
+- **They add ~1.3 s of latency** (the per-query rewrite LLM call: `transform_ms` ≈ 1411 ms
+  for rewrite, 1276 ms for step_back — see the per-stage latency table) for no upside here.
 
 > **Query transforms are a net loss on terse factoid queries.** They earn their cost on
 > long, conversational, or multi-hop questions — which this golden set deliberately does not
@@ -162,19 +207,33 @@ still answers the original question.
 
 ## 5. What this sweep does and does not establish
 
-**Establishes (above the noise floor, on this corpus):**
-- Dense retrieval alone is strong (recall@5 ≈ 0.74); over-retrieval saturates recall@50.
-- The cross-encoder reranker is a latency + quality regression on short factual passages.
-- sentence_window trades retrieval recall for rerank precision (real, measurable).
-- Query transforms degrade ranking on terse factoid queries.
-- Latency is dominated by rerank (~0.9 s) and generation (~2 s); transforms add ~1.5 s.
+**Establishes — deterministic + reproducible (on this corpus):** these come from
+retrieval/rerank metrics and latency, which reproduce exactly run-to-run.
+- Dense retrieval alone is strong (recall@5 ≈ 0.74, MRR ≈ 0.58); over-retrieval saturates
+  recall@50 (≈ 0.85), so recall@50 cannot discriminate techniques here.
+- sentence_window trades retrieval recall for rerank precision (recall@5 0.74 → 0.54, p@n
+  0.087 → 0.136) — the one clearly above-floor retrieval effect in the sweep.
+- Both LLM query transforms degrade retrieval *ranking* on terse factoid queries (MRR 0.583
+  → 0.481 rewrite, → 0.405 step_back).
+- The cross-encoder reranker adds ~940 ms and does not improve any metric here (precision@n
+  drifts down). **Cost established; "improves nothing" established; "actively harms quality"
+  is *not* — see below.**
+- Latency cost structure: rerank ≈ 0.9 s, generation ≈ 2 s, each LLM query transform ≈ 1.3 s
+  (per-stage table in `experiment_tables.md`).
 
-**Does NOT establish (and the report must not be read as claiming):**
-- That these techniques are bad *in general*. Every negative result above is plausibly a
+**Directional only — single run, inside the generation/judge noise (do NOT treat as
+established):**
+- Every `answer_correct` and `answer_relevance` *difference* between variants. The measured
+  floor is ~0.09 (range of 4 identical-pipeline runs) and is a floor, not a bound. This
+  includes the reranker's −0.121 ans_correct (suggestive, unconfirmed), all chunker
+  generation gaps, and all transform generation gaps.
+
+**Does NOT establish at all:**
+- That any of these techniques is bad *in general*. Every negative result is plausibly a
   corpus/query-distribution artifact (short passages, terse single-hop questions, N=33).
-- Any `answer_correct` difference under ~0.09 (most of the chunker and transform generation
-  deltas) — those are inside the measured generation+judge noise.
-- Multi-hop / parent-document behavior — the golden set is 88% single-passage by design.
+- Multi-hop / parent-document behavior — the golden set is 88% single-passage by design, so
+  parent-document expansion and decomposition transforms have nothing to bite on.
+- Any generation effect without variance: **every variant is a single run.**
 
 **To make the conclusions stronger** (future work, each gated behind "did eval improve?"):
 grow the golden set well past 33 and add multi-hop questions; run each judged variant N
