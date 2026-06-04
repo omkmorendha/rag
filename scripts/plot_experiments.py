@@ -144,50 +144,58 @@ def plot_latency(variants: dict[str, Any], out_dir: Path) -> Path | None:
     """Per-query latency across variants, drawn twice.
 
     Two panels because no single y-axis is honest here: values span ~8 ms (retrieve-only)
-    to ~4.5 s (judged + transform). A **linear** panel (left) shows the true cost
-    structure — the headline finding that rerank and generation dominate — with the ms
-    value labelled on each bar so the magnitudes are unambiguous. A **log** panel (right)
-    keeps every variant visible for cross-variant comparison. Reading only the log panel
-    would visually flatten the 360× spread the linear panel exists to show.
+    to ~4.5 s (judged + transform). The **linear** panel (left) is a **stacked per-stage**
+    bar (transform / retrieve / rerank / generate mean ms) so the cost *attribution* — the
+    headline finding that rerank and generation dominate, and that the LLM transforms add a
+    third large slice — is visible, not just asserted. The **log** panel (right) shows
+    end-to-end p50/p95 so every variant stays comparable across the 8 ms–4.5 s range; reading
+    only the log panel would flatten the ~two-orders-of-magnitude spread the linear panel
+    exists to show.
     """
-    rows: list[tuple[str, float, float]] = []
+    stage_keys = [
+        ("transform_ms", "transform", _COLORS[4]),
+        ("retrieve_ms", "retrieve", _COLORS[2]),
+        ("rerank_ms", "rerank", _COLORS[1]),
+        ("generate_ms", "generate", _COLORS[0]),
+    ]
+    rows: list[tuple[str, dict[str, Any]]] = []
     for names in FAMILIES.values():
         for name, summary in _summaries(variants, names):
-            p50 = summary.get("query_latency_ms_p50")
-            p95 = summary.get("query_latency_ms_p95")
-            if p50 is not None:
-                rows.append((name, p50, p95 if p95 is not None else p50))
+            if summary.get("query_latency_ms_p50") is not None:
+                rows.append((name, summary))
     if not rows:
         return None
 
     fig, (ax_lin, ax_log) = plt.subplots(
-        1, 2, figsize=(max(12, len(rows) * 1.3), 4.6)
+        1, 2, figsize=(max(12, len(rows) * 1.3), 4.8)
     )
-    x = range(len(rows))
+    x = list(range(len(rows)))
     width = 0.4
-    labels = [_short(r[0]) for r in rows]
+    labels = [_short(name) for name, _ in rows]
 
-    # Linear panel: p50 only, value-labelled — the honest cost-structure view.
-    bars = ax_lin.bar(list(x), [r[1] for r in rows], width=0.6, color=_COLORS[0])
-    for rect, (_, p50, _) in zip(bars, rows, strict=True):
-        ax_lin.annotate(
-            f"{p50:.0f}", (rect.get_x() + rect.get_width() / 2, p50),
-            ha="center", va="bottom", fontsize=7,
-        )
-    ax_lin.set_ylabel("p50 query latency (ms, linear)")
-    ax_lin.set_xticks(list(x))
+    # Linear panel: stacked per-stage mean latency — shows WHERE the cost goes.
+    bottoms = [0.0] * len(rows)
+    for key, label, color in stage_keys:
+        heights = [float(s.get(key) or 0.0) for _, s in rows]
+        ax_lin.bar(x, heights, width=0.6, bottom=bottoms, label=label, color=color)
+        bottoms = [b + h for b, h in zip(bottoms, heights, strict=True)]
+    for i, total in enumerate(bottoms):
+        ax_lin.annotate(f"{total:.0f}", (i, total), ha="center", va="bottom", fontsize=7)
+    ax_lin.set_ylabel("mean latency (ms, linear) — stacked by stage")
+    ax_lin.set_xticks(x)
     ax_lin.set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
-    ax_lin.set_title("cost structure (linear) — rerank + generate dominate")
+    ax_lin.set_title("per-stage cost attribution (mean ms)")
+    ax_lin.legend(fontsize=8, ncol=2)
     ax_lin.grid(axis="y", linestyle=":", alpha=0.5)
 
-    # Log panel: p50 + p95, every variant visible across the 8ms–4.5s range.
-    ax_log.bar([i - width / 2 for i in x], [r[1] for r in rows], width, label="p50",
-               color=_COLORS[0])
-    ax_log.bar([i + width / 2 for i in x], [r[2] for r in rows], width, label="p95",
-               color=_COLORS[1])
+    # Log panel: end-to-end p50 + p95, every variant visible across the 8ms–4.5s range.
+    p50s = [float(s["query_latency_ms_p50"]) for _, s in rows]
+    p95s = [float(s.get("query_latency_ms_p95") or s["query_latency_ms_p50"]) for _, s in rows]
+    ax_log.bar([i - width / 2 for i in x], p50s, width, label="p50", color=_COLORS[0])
+    ax_log.bar([i + width / 2 for i in x], p95s, width, label="p95", color=_COLORS[1])
     ax_log.set_yscale("log")
-    ax_log.set_ylabel("query latency (ms, log)")
-    ax_log.set_xticks(list(x))
+    ax_log.set_ylabel("end-to-end query latency (ms, log)")
+    ax_log.set_xticks(x)
     ax_log.set_xticklabels(labels, rotation=40, ha="right", fontsize=8)
     ax_log.set_title("p50 / p95 across variants (log)")
     ax_log.legend()

@@ -8,11 +8,13 @@ separately.
 
 **The headline, stated carefully:** on this corpus, the two techniques the architecture doc
 expected to help most — the cross-encoder reranker and query transforms — **add latency
-without buying measurable quality**, and degrade the *deterministic* retrieval-ranking
-metrics (MRR, precision@n). The harness is doing its job: it tells you what actually moved
-the numbers here, not what should in general. We are deliberate below about which findings
-are **established** (deterministic, reproducible) versus **directional** (generation-judge
-metrics inside the measured noise) — see §5.
+without buying measurable quality.** The reranker leaves retrieval ranking untouched (it
+re-orders an identical candidate set) and nudges precision@n down within the noise; the LLM
+query transforms actively *degrade* retrieval ranking (MRR and recall drop). The harness is
+doing its job: it tells you what actually moved the numbers here, not what should in general.
+We are deliberate below about which findings are **established** (deterministic,
+reproducible) versus **directional** (generation-judge metrics inside the measured noise) —
+see §5.
 
 ## How to read this (and what NOT to over-read)
 
@@ -41,14 +43,21 @@ metrics inside the measured noise) — see §5.
   answer.lower()`), so it under-counts correct paraphrases. `faithfulness` and
   `answer_relevance` (LLM-judge) are the better generation signals — but they are *also*
   single-run and noisy; only the retrieval/rerank metrics are deterministic.
-- **`recall@k` (k=50) is saturated** at ~0.85 — over-retrieving 50 of 3,200 chunks almost
-  always catches the gold one. **Read `recall@5` and `MRR` for retrieval deltas.**
-- **Latency** is per-query wall-clock **p50/p95 in ms**, steady-state (cold model loads are
-  warmed off first). p50/p95 are reported because the mean is cold-load-sensitive. The
-  **latency chart is two panels** (`figures/latency.png`): a *linear* panel for the true
-  cost magnitudes and a *log* panel for cross-variant visibility — read the linear one for
-  the cost story. A per-stage breakdown (transform/retrieve/rerank/generate ms) is in
-  `experiment_tables.md` under "per-stage latency".
+- **`recall@k` (k=50) is high but not flat.** It sits at 0.848 for the seven variants that
+  share the base index (over-retrieving 50 of ~3,200 chunks usually catches the gold one),
+  but it **drops where the candidate pool changes** — sentence_window 0.721, qt_rewrite
+  0.788, qt_step_back 0.778. So recall@50 is a *weak* discriminator, not a useless one; it
+  still flags the techniques that move the candidate set. **`recall@5` and `MRR` remain the
+  sharper retrieval signals.**
+- **Latency** is per-query wall-clock in ms, steady-state (cold model loads warmed off
+  first). The **latency chart is two panels** (`figures/latency.png`): a *linear, stacked
+  per-stage* panel (transform/retrieve/rerank/generate **means**, which sum to the
+  end-to-end time) that shows *where* the cost goes, and a *log* panel of *end-to-end
+  p50/p95* for cross-variant visibility. The same per-stage means are tabled in
+  `experiment_tables.md` under "per-stage latency". **Note two different statistics are in
+  play:** per-stage costs are reported as *means*; the end-to-end "p50/p95" and the
+  "~940 ms"-style deltas in the prose are *percentiles*. They are close here (~0.9 s rerank
+  either way) but not identical — means are cold-load-sensitive, percentiles less so.
 - **Reproducibility:** retrieval/rerank metrics are deterministic and will reproduce exactly;
   generation, judge, and the LLM query transforms vary run-to-run. **Each variant is a single
   run** — no variance is reported, which is the report's main statistical limitation.
@@ -66,6 +75,9 @@ Hold ingest fixed (recursive chunk, bge-small embed, FAISS flat); add one query-
 at a time.
 
 ![ablation](figures/ablation.png)
+
+_(Quality metrics only; the latency cost of each stage is in `figures/latency.png` and the
+per-stage table in `experiment_tables.md`.)_
 
 | rung | recall@5 | MRR | p@n | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
@@ -114,11 +126,13 @@ ground truth must be regenerated per chunker — otherwise retrieval scores garb
   recursive chunker's advantage shows up on long, headed documents, which this corpus lacks.
   The `ans_correct` gap (0.455 vs 0.424, Δ 0.031) is **well inside the ~0.09 noise floor →
   not a real difference**, and is single-run anyway.
-- **sentence_window makes a genuine trade.** recall@5 drops hard (0.74 → 0.54) — smaller
-  units mean the gold sentence-window is more often outside the top-5 — but precision@n
-  *rises* (0.087 → 0.136), because the windows that do surface are tighter. This is the
-  textbook small-retrieval-unit trade-off, and it is the one real, above-noise retrieval
-  effect in the chunker family.
+- **sentence_window makes a genuine trade.** recall@5 drops hard (0.74 → 0.54) and even
+  recall@50 falls (0.85 → 0.72) — smaller units mean the gold sentence-window is more often
+  outside the top-k — but precision@n *rises* (0.087 → 0.136), because the windows that do
+  surface are tighter. This is the textbook small-retrieval-unit trade-off, and it is the one
+  real, above-noise retrieval effect in the chunker family. Note this variant indexes **4,519
+  chunks vs ~3,222** for fixed/recursive — it splits the same corpus into more, smaller
+  units, which is *why* the gold unit is harder to land in the top-k.
 
 > **No chunker is a free win here.** recursive is a safe default; sentence_window is only
 > worth it if you add parent-document expansion (retrieve the precise window, feed the
@@ -133,6 +147,9 @@ The architecture doc calls the cross-encoder "usually the biggest quality jump p
 code." **Here it does not help — and the deterministic metrics say it slightly hurts.**
 
 ![reranker](figures/reranker.png)
+
+_(Quality metrics only — the reranker's ~940 ms cost is in the latency figure/table, not
+here.)_
 
 | reranker | recall@5 | MRR | p@n | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
@@ -174,6 +191,9 @@ still answers the original question.
 
 ![query_transform](figures/query_transform.png)
 
+_(Quality metrics only — the ~1.3 s the transform LLM call adds is the bottom slice of each
+bar in the latency figure's stacked panel.)_
+
 | transform | recall@5 | recall@10 | MRR | ans_correct | faith | relevance | lat p50/p95 (ms) |
 |---|---|---|---|---|---|---|---|
 | passthrough | 0.737 | 0.747 | 0.583 | 0.394 | 0.995 | 0.738 | 2840 / 6035 |
@@ -209,12 +229,16 @@ variants are.
 
 **Establishes — deterministic + reproducible (on this corpus):** these come from
 retrieval/rerank metrics and latency, which reproduce exactly run-to-run.
-- Dense retrieval alone is strong (recall@5 ≈ 0.74, MRR ≈ 0.58); over-retrieval saturates
-  recall@50 (≈ 0.85), so recall@50 cannot discriminate techniques here.
+- Dense retrieval alone is strong (recall@5 ≈ 0.74, MRR ≈ 0.58). recall@50 is high (0.85 on
+  the base index) but **not saturated** — it drops to 0.72–0.79 for sentence_window and the
+  two transforms, i.e. it still registers techniques that change the candidate pool.
 - sentence_window trades retrieval recall for rerank precision (recall@5 0.74 → 0.54, p@n
   0.087 → 0.136) — the one clearly above-floor retrieval effect in the sweep.
 - Both LLM query transforms degrade retrieval *ranking* on terse factoid queries (MRR 0.583
-  → 0.481 rewrite, → 0.405 step_back).
+  → 0.481 rewrite, → 0.405 step_back; recall@50 also drops, 0.848 → 0.79/0.78). One caveat:
+  the *direction* is robust and large, but the exact value is a **single LLM rewrite draw** —
+  retrieval is deterministic only *given* the rewritten query, and the rewrite itself varies
+  run-to-run. Read these as "transforms clearly hurt ranking here," not as bit-exact numbers.
 - The cross-encoder reranker adds ~940 ms and does not improve any metric here (precision@n
   drifts down). **Cost established; "improves nothing" established; "actively harms quality"
   is *not* — see below.**
