@@ -12,11 +12,17 @@ from rag.chunkers import (
     SentenceWindowChunker,
 )
 from rag.config import load_config, stage_config
+from rag.embedders import Embedder, HashingEmbedder, SentenceTransformerEmbedder
 
 CHUNKERS = {
     FixedTokenChunker.name: FixedTokenChunker,
     RecursiveTextChunker.name: RecursiveTextChunker,
     SentenceWindowChunker.name: SentenceWindowChunker,
+}
+
+EMBEDDERS = {
+    SentenceTransformerEmbedder.name: SentenceTransformerEmbedder,
+    HashingEmbedder.name: HashingEmbedder,
 }
 
 
@@ -35,3 +41,20 @@ def build_chunker(
 
     params = {key: value for key, value in chunker_config.items() if key != "name"}
     return CHUNKERS[name](**params)
+
+
+def build_embedder(
+    config: dict[str, Any] | None = None, *, path: Path | None = None
+) -> Embedder:
+    """Build the configured embedder strategy."""
+    loaded = load_config(path or Path("config.yaml")) if config is None else config
+    embedder_config = stage_config(loaded, "embedder")
+    name = embedder_config.get("name", SentenceTransformerEmbedder.name)
+    if not isinstance(name, str):
+        raise ValueError("embedder.name must be a string")
+    if name not in EMBEDDERS:
+        available = ", ".join(sorted(EMBEDDERS))
+        raise ValueError(f"unknown embedder {name!r}; available: {available}")
+
+    params = {key: value for key, value in embedder_config.items() if key != "name"}
+    return EMBEDDERS[name](**params)
