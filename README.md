@@ -49,8 +49,8 @@ uv run python scripts/chunk_corpus.py --write
 # 3. encode chunks using config.yaml
 uv run python scripts/embed_chunks.py --write
 
-# 4. ingest the encoded chunks (build + persist the index)
-python ingest.py
+# 4. build + persist the vector index using config.yaml
+uv run python scripts/index_corpus.py --write
 
 # 5. query
 python query.py "your question here"
@@ -92,6 +92,23 @@ Available strategies:
 
 - `local` — sentence-transformers bi-encoder for production retrieval.
 - `hashing` — deterministic lightweight vectors for tests and smoke runs.
+
+## Indexing
+
+`config.yaml` selects how embedded chunks are indexed and persisted to `vectorstore/`:
+
+```yaml
+indexer:
+  name: faiss_flat
+```
+
+Available strategies:
+
+- `faiss_flat` — exact (brute-force) inner-product search; baseline.
+
+The index records the embedder it was built with; loading it under a different embedder
+raises `IndexMismatchError`, enforcing the shared-vector-space invariant (ingest and query
+must use the same encoder).
 
 ## Status
 
