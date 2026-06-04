@@ -13,6 +13,7 @@ from rag.chunkers import (
 )
 from rag.config import load_config, stage_config
 from rag.embedders import Embedder, HashingEmbedder, SentenceTransformerEmbedder
+from rag.generator import AnthropicGenerator, Generator
 from rag.indexers import FaissFlatIndexer, Index, Indexer
 from rag.rerankers import CrossEncoderReranker, NoopReranker, Reranker
 from rag.retrievers import DenseRetriever, Retriever
@@ -39,6 +40,10 @@ RETRIEVERS = {
 RERANKERS = {
     NoopReranker.name: NoopReranker,
     CrossEncoderReranker.name: CrossEncoderReranker,
+}
+
+GENERATORS = {
+    AnthropicGenerator.name: AnthropicGenerator,
 }
 
 
@@ -160,3 +165,20 @@ def build_reranker(
 
     params = {key: value for key, value in reranker_config.items() if key != "name"}
     return RERANKERS[name](**params)
+
+
+def build_generator(
+    config: dict[str, Any] | None = None, *, path: Path | None = None
+) -> Generator:
+    """Build the configured generator strategy."""
+    loaded = load_config(path or Path("config.yaml")) if config is None else config
+    generator_config = stage_config(loaded, "generator")
+    name = generator_config.get("name", AnthropicGenerator.name)
+    if not isinstance(name, str):
+        raise ValueError("generator.name must be a string")
+    if name not in GENERATORS:
+        available = ", ".join(sorted(GENERATORS))
+        raise ValueError(f"unknown generator {name!r}; available: {available}")
+
+    params = {key: value for key, value in generator_config.items() if key != "name"}
+    return GENERATORS[name](**params)

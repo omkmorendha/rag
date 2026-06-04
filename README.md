@@ -144,6 +144,26 @@ Available strategies:
 - `cross_encoder` — local cross-encoder that scores each pair jointly and keeps the top
   `top_n`; usually the biggest quality jump per line of code.
 
+## Generation
+
+`config.yaml` selects the final stage: a grounded, cited answer built from the reranked
+chunks. The generator answers *only* from the chunks, cites the source passage of each
+fact, and says "I don't know" when the answer isn't present — treating chunk text as data,
+never as instructions.
+
+```yaml
+generator:
+  name: anthropic
+  model: claude-haiku-4-5
+  max_tokens: 1024
+```
+
+Available strategies:
+
+- `anthropic` — Claude via the Messages API. Needs `ANTHROPIC_API_KEY` in the environment
+  (a `.env` is read by the scripts). The static grounding prompt is prompt-cached; only the
+  per-query chunks vary.
+
 ## Status
 
 Early scaffolding. Building the first vertical slice (Markdown → recursive chunk → local
