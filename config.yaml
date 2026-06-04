@@ -1,0 +1,17 @@
+# Which strategy each pipeline stage uses. registry.py maps these names to
+# implementations; the entry points just wire them. This is the strategy switch.
+#
+# HARD INVARIANT (ARCHITECTURE.md §2): the `embedder` block is read by BOTH ingest and
+# query. Embed the corpus with model A and the query with model B and retrieval silently
+# returns garbage — same vector space is the whole point of a bi-encoder.
+
+embedder:  { name: local, model: BAAI/bge-small-en-v1.5 }
+chunker:   { name: recursive, size: 512, overlap: 64 }
+indexer:   { name: faiss_flat }
+retriever: { name: dense, k: 50 }
+reranker:  { name: noop }
+query_transform: { name: passthrough }
+generator: { name: anthropic, model: claude-sonnet-4-6, top_n: 8 }
+
+# Where the persisted index lives (relative to repo root).
+vectorstore: vectorstore
