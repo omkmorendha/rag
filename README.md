@@ -110,6 +110,40 @@ The index records the embedder it was built with; loading it under a different e
 raises `IndexMismatchError`, enforcing the shared-vector-space invariant (ingest and query
 must use the same encoder).
 
+## Retrieval
+
+`config.yaml` selects how a query is turned into candidate chunks. Over-retrieve here (k≈50);
+the reranker compresses the candidates afterwards.
+
+```yaml
+retriever:
+  name: dense
+  k: 50
+```
+
+Available strategies:
+
+- `dense` — semantic search over the vector index, embedding the query with the same
+  encoder used at ingest; baseline.
+
+## Reranking
+
+`config.yaml` selects how candidates are re-scored and compressed before generation. A
+reranker re-scores `(query, chunk)` pairs it already holds and never touches the index.
+
+```yaml
+reranker:
+  name: cross_encoder
+  model: BAAI/bge-reranker-base
+  top_n: 8
+```
+
+Available strategies:
+
+- `noop` — pass candidates through unchanged (optional `top_n` cap); for the vertical slice.
+- `cross_encoder` — local cross-encoder that scores each pair jointly and keeps the top
+  `top_n`; usually the biggest quality jump per line of code.
+
 ## Status
 
 Early scaffolding. Building the first vertical slice (Markdown → recursive chunk → local
