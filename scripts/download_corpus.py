@@ -37,12 +37,16 @@ FILES = {
 
 _PARQUET_MAGIC = b"PAR1"
 
+# Seconds to wait on the network before giving up, so a stalled connection can't hang
+# the download indefinitely.
+DOWNLOAD_TIMEOUT = 30
+
 
 def _download(remote_rel: str, dest: Path) -> None:
     url = f"{_HF_BASE}/{remote_rel}"
     print(f"  downloading {url}")
     print(f"          -> {dest}")
-    with urllib.request.urlopen(url) as resp:  # noqa: S310 (trusted HF host)
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp:  # noqa: S310 (trusted HF host)
         data = resp.read()
     if data[:4] != _PARQUET_MAGIC:
         raise RuntimeError(

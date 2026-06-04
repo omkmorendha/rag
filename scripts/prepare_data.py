@@ -63,7 +63,7 @@ def build_corpus() -> int:
         batch = rows[start : start + PASSAGES_PER_FILE]
         first_id = batch[0]["id"]
         last_id = batch[-1]["id"]
-        lines = [f"# rag-mini-wikipedia passages {first_id}–{last_id}", ""]
+        lines = [f"# rag-mini-wikipedia passages {first_id}-{last_id}", ""]
         for r in batch:
             body = _clean(r["passage"])
             if not body:
