@@ -40,3 +40,12 @@ reranker:
   name: cross_encoder
   model: BAAI/bge-reranker-base
   top_n: 8
+
+# The final stage: a grounded, cited answer from the reranked chunks.
+#
+# Available generators:
+#   anthropic        Claude via the Messages API; answers strictly from the chunks
+generator:
+  name: anthropic
+  model: claude-haiku-4-5
+  max_tokens: 1024
