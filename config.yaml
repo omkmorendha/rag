@@ -15,3 +15,10 @@ embedder:
   model: BAAI/bge-small-en-v1.5
   batch_size: 32
   normalize_embeddings: true
+
+# Swap index structures by changing `indexer.name`.
+#
+# Available indexers:
+#   faiss_flat       exact (brute-force) inner-product search; baseline
+indexer:
+  name: faiss_flat
