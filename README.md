@@ -15,49 +15,54 @@ cross-encoder reranker. Only the final generation call hits an external API.
 
 ## Pipelines
 
+Two pipelines run at different times (ARCHITECTURE.md §0); the persisted index in
+`vectorstore/` is the boundary between them.
+
 ```
-ingest.py    load → parse → chunk → embed → index → persist to vectorstore/
-query.py     load index → transform query → retrieve → rerank → build prompt → generate
-evaluate.py  run golden set through the query path, score each component separately
+ingest   load → parse → chunk → embed → index → persist to vectorstore/
+                 (the scripts/*.py chain below)
+query    load index → retrieve → rerank → generate   (wired via rag/registry.py)
+eval     run the golden set through the query path, score each stage separately
+                 (evaluate.py)
 ```
 
 ## Layout
 
 ```
-data/                  source docs (gitignored)
-vectorstore/           persisted indexes (gitignored)
+data/                  source docs + generated corpus (gitignored)
+vectorstore/           persisted index: index.faiss + chunks.jsonl + meta.json (gitignored)
 eval/golden.jsonl      query → expected_answer / expected_chunk_ids
-rag/                   pipeline package (stage interfaces + strategy implementations)
-ingest.py              offline ingestion entry point
-query.py               online query entry point
+rag/                   pipeline package — one subpackage per stage:
+  loaders/ parsers/ chunkers/ embedders/ indexers/ retrievers/ rerankers/ generator/ eval/
+  registry.py          name → implementation (the strategy switch)
+  config.py  types.py
+scripts/               ingest pipeline + corpus/golden derivation (run with `uv run`)
 evaluate.py            offline evaluation harness
 config.yaml            selects which strategy per stage
 ```
 
 ## Getting started
 
-> Scaffolding stage — entry points and stage implementations are still being built out.
-> See the build order in [`ARCHITECTURE.md`](./ARCHITECTURE.md#6-suggested-build-order).
-
 ```bash
-# 1. build the Markdown corpus
+# 1. build the Markdown corpus from the rag-mini-wikipedia benchmark
 uv run python scripts/prepare_data.py
 
-# 2. chunk the corpus using config.yaml
+# 2. chunk → 3. embed → 4. index (each reads config.yaml)
 uv run python scripts/chunk_corpus.py --write
-
-# 3. encode chunks using config.yaml
 uv run python scripts/embed_chunks.py --write
-
-# 4. build + persist the vector index using config.yaml
 uv run python scripts/index_corpus.py --write
 
-# 5. query
-python query.py "your question here"
+# 5. derive the eval golden set (depends on the chunk ids from step 2)
+uv run python scripts/derive_golden.py
 
-# 6. measure
-python evaluate.py
+# 6. measure — score retrieval / rerank / generation separately
+uv run python evaluate.py              # deterministic + free (generation needs ANTHROPIC_API_KEY)
+uv run python evaluate.py --no-generate  # retrieval + rerank only, no API
+uv run python evaluate.py --judge        # add LLM-as-judge generation scoring
 ```
+
+Generation and the `--judge` scorer call Claude — put `ANTHROPIC_API_KEY` in a `.env`
+file (read automatically) or the environment.
 
 ## Chunking
 
@@ -190,6 +195,11 @@ chunker, so regenerate it with `scripts/derive_golden.py` whenever the chunker c
 
 ## Status
 
-Early scaffolding. Building the first vertical slice (Markdown → recursive chunk → local
-embed → FAISS flat → dense retrieve → grounded generate), then layering in alternative
-strategies behind eval.
+The full vertical slice and the eval harness are in (build order §6.1–6.2): Markdown →
+recursive chunk → local embed → FAISS flat → dense retrieve → cross-encoder rerank →
+grounded generate, plus `evaluate.py` scoring each stage. Every stage is swappable from
+`config.yaml`.
+
+Next, each gated behind "did eval improve?" (ARCHITECTURE.md §6): PDF parser, `hybrid_rrf`
+retrieval (dense + BM25), alternative chunkers, query transforms, and decoupled
+parent-document retrieval.
