@@ -1,6 +1,8 @@
 # --- RAG artifacts ---
-data/              # source documents — keep out of version control
-vectorstore/       # persisted indexes (FAISS, BM25, etc.)
+# source documents + generated corpus — keep out of version control
+data/
+# persisted indexes (FAISS, BM25, etc.)
+vectorstore/
 *.faiss
 *.index
 
@@ -34,6 +36,9 @@ ENV/
 # Model / HF caches if vendored locally
 .cache/
 models/
+
+# --- Local agent / editor instructions (not part of the repo) ---
+CLAUDE.md
 
 # --- Editors / OS ---
 .vscode/
