@@ -34,6 +34,7 @@ GOLDEN_PATH = REPO_ROOT / "eval" / "golden.jsonl"
 # either a single passage id or a list of passage ids (multi-passage golden rows).
 # (qid -> source passage id | list of source passage ids)
 CURATED: dict[int, int | list[int]] = {
+    # --- original single-passage set ---
     12: 382,  # Who suggested Lincoln grow a beard? -> Grace Bedell
     24: 282,  # Which county was Lincoln born in? -> Hardin County
     32: 344,  # General in charge at the Battle of Antietam? -> McClellan
@@ -44,6 +45,31 @@ CURATED: dict[int, int | list[int]] = {
     247: 405,  # What fraternity was Coolidge a member of? -> Phi Gamma Delta
     249: 407,  # In 1905 Coolidge met and married whom? -> Grace Anna Goodhue
     290: 820,  # One significant non-official language? -> Chinese
+    # --- added single-passage set (answer verified present in the passage) ---
+    136: 732,  # What happened in 1833? -> Avogadro recalled to Turin university
+    140: 147,  # What is named after Celsius? -> the Celsius crater on the Moon
+    154: 142,  # 1730-1744? -> professor of astronomy at Uppsala University
+    155: 144,  # What happened in 1745? -> the scale was reversed
+    210: 405,  # When did Coolidge drop John? -> upon graduating from college
+    313: 2274,  # How many provinces/territories does Canada have? -> ten + three
+    317: 2327,  # Most densely populated part of Canada? -> Quebec City-Windsor
+    319: 2326,  # Largest country in the world? -> Canada is second, after Russia
+    340: 2273,  # What happened in 1867? -> Canada formed as a federal polity
+    347: 3171,  # Specialized duck that catches large fish? -> the smew
+    387: 3170,  # What lets a duck filter water? -> lamellae
+    403: 880,  # Population of Egypt? -> more than 78 million
+    416: 876,  # Since when has Egypt been a republic? -> June 18 1953
+    436: 1177,  # How long may elephants live? -> 70 years
+    442: 1177,  # Elephant weight at birth? -> 120 kilograms
+    459: 1234,  # What are elephant ears important for? -> temperature regulation
+    511: 1655,  # What is Finland's economy like? -> industrialised free-market
+    567: 2003,  # Positions Ford played? -> center and linebacker
+    571: 2074,  # Who did Ford nominate for VP? -> Bob Dole
+    # --- multi-passage set (answer verified present in EVERY listed passage) ---
+    26: [278, 321, 322],  # When did Lincoln first serve as President? -> Mar 4 1861
+    164: [2407, 2409],  # Defense mechanism using colour/shape? -> mimicry
+    172: [2386, 2397],  # Similarities between beetles and grasshoppers? -> mouthparts
+    184: [2440, 2441],  # Study of beetles called? -> coleopterology
 }
 
 
