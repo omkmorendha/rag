@@ -57,20 +57,27 @@ class RewriteTransform:
         self._client: Any | None = None
 
     def transform(self, query: str) -> str:
-        """Rewrite ``query`` for retrieval, returning the original on an empty response."""
-        client = self._load_client()
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": query}],
-        )
+        """Rewrite ``query`` for retrieval, returning the original on any failure.
+
+        A provider/network error (or an empty response) must never abort a sweep, so
+        client creation and the API call are guarded and fall back to the input query.
+        """
+        try:
+            client = self._load_client()
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": query}],
+            )
+        except Exception:
+            return query
         return _parse_response(response, fallback=query)
 
     def _load_client(self) -> Any:

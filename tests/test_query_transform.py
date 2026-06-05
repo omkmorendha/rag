@@ -64,9 +64,9 @@ def test_build_query_transform_unknown_name_raises(tmp_path: Path) -> None:
 
 
 class _Block:
-    def __init__(self, text: str, type: str = "text") -> None:
+    def __init__(self, text: str, block_type: str = "text") -> None:
         self.text = text
-        self.type = type
+        self.type = block_type
 
 
 class _Response:
@@ -85,7 +85,7 @@ def test_parse_response_falls_back_on_empty() -> None:
 
 
 def test_parse_response_ignores_non_text_blocks() -> None:
-    response = _Response([_Block("ignored", type="thinking"), _Block("kept")])
+    response = _Response([_Block("ignored", block_type="thinking"), _Block("kept")])
     assert _parse_response(response, fallback="orig") == "kept"
 
 

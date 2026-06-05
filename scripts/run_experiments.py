@@ -340,7 +340,11 @@ def render_report(collected: dict[str, dict[str, Any]], *, k: int, n: int) -> st
         for name in ordered:
             entry = collected[name]
             if "error" in entry:
-                lines.append(f"| {name} | **ERROR** {entry['error'][:80]} |" + " |" * 9)
+                # Pad to match the header: one cell per metric column + latency.
+                num_empty = len(_METRIC_COLUMNS) + 1
+                lines.append(
+                    f"| {name} | **ERROR** {entry['error'][:80]} |" + " |" * num_empty
+                )
                 continue
             summary = entry["summary"]
             cells = [_fmt(summary.get(key)) for key, _ in _METRIC_COLUMNS]

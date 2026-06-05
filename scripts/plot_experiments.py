@@ -229,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
         written.append(latency)
 
     for path in written:
-        print(f"wrote {path.relative_to(REPO_ROOT)}")
+        # --out-dir may point outside the repo, where relative_to() would raise.
+        display = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+        print(f"wrote {display}")
     return 0
 
 
