@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "anthropic>=0.105.2",
+    "claude-agent-sdk>=0.2.90",
     "faiss-cpu>=1.14.2",
     "ftfy>=6.3.1",
     "pyarrow>=24.0.0",
