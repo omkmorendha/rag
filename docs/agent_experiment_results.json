@@ -1,0 +1,43 @@
+{
+  "variants": {
+    "agent_haiku": {
+      "model": "claude-haiku-4-5",
+      "eval_flags": [
+        "--judge"
+      ],
+      "n": 8,
+      "summary": {
+        "recall_at_k": 0.5454545454545454,
+        "mrr": 0.0,
+        "precision_at_n": 0.5,
+        "answer_correct": 0.45454545454545453,
+        "generate_ms": 12270.063895182278,
+        "query_latency_ms": 12270.063895182278,
+        "query_latency_ms_p50": 12842.93329200591,
+        "query_latency_ms_p95": 19101.13759180531,
+        "faithfulness": 0.6833333333333333,
+        "answer_relevance": 0.6742424242424242
+      }
+    },
+    "agent_sonnet": {
+      "model": "claude-sonnet-4-6",
+      "eval_flags": [
+        "--judge"
+      ],
+      "n": 8,
+      "summary": {
+        "recall_at_k": 0.4949494949494949,
+        "mrr": 0.0,
+        "precision_at_n": 0.4444444444444444,
+        "answer_correct": 0.42424242424242425,
+        "generate_ms": 31114.935255149965,
+        "query_latency_ms": 31114.935255149965,
+        "query_latency_ms_p50": 18008.843458010233,
+        "query_latency_ms_p95": 61353.40901679591,
+        "faithfulness": 0.6872727272727273,
+        "answer_relevance": 0.6757575757575758
+      }
+    }
+  },
+  "n": 8
+}
