@@ -31,8 +31,17 @@ Run:
     uv run python scripts/run_agent_experiments.py --models haiku  # one tier
     uv run python scripts/run_agent_experiments.py --limit 3       # smoke test
 
-Needs ANTHROPIC_API_KEY (loaded from .env, same as evaluate.py) and the ``claude`` CLI
-(the Agent SDK drives it).
+Auth (two separate credentials, on purpose):
+
+- the **agent** runs on your **Claude subscription** — the Agent SDK drives the ``claude``
+  CLI, which uses the OAuth login from ``claude /login`` (stored in the OS keychain). We
+  strip ``ANTHROPIC_API_KEY`` from the agent subprocess env (``_agent_env``) so it does NOT
+  fall back to the metered API;
+- the **judge** is a direct Messages API call and uses ``ANTHROPIC_API_KEY`` (from .env,
+  same as evaluate.py).
+
+So: be logged in via ``claude /login`` (subscription) AND have ANTHROPIC_API_KEY in .env
+(for the judge). Needs the ``claude`` CLI on PATH.
 """
 
 from __future__ import annotations
@@ -173,6 +182,22 @@ def _cited_chunks(passage_ids: list[int], passages: dict[int, str]) -> list[Chun
     return chunks
 
 
+def _agent_env() -> dict[str, str]:
+    """Environment for the agent subprocess — deliberately WITHOUT the API key.
+
+    The Agent SDK drives the ``claude`` CLI. If ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN``
+    is present, the CLI authenticates against the metered API and bills per-token. We strip
+    both so the CLI falls back to the subscription OAuth credentials from ``claude /login``
+    (stored in the OS keychain) — i.e. the agent runs on the user's Claude subscription, not
+    the API. The judge still uses the API key (it's a separate ``anthropic.Anthropic()`` call
+    in this process, untouched by this env).
+    """
+    env = dict(os.environ)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
+
+
 async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
     """Run one golden query through the agent; return (answer, latency_ms, usage)."""
     options = ClaudeAgentOptions(
@@ -181,6 +206,7 @@ async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
         system_prompt=AGENT_SYSTEM,
         permission_mode="bypassPermissions",  # read-only investigation, no prompts
         max_turns=30,
+        env=_agent_env(),  # subscription auth (no API key) — see _agent_env()
     )
 
     answer_parts: list[str] = []
@@ -269,8 +295,15 @@ async def _run_model(
 
 async def _main_async(args: argparse.Namespace) -> int:
     _load_dotenv()
+    # The AGENT runs on the subscription (keychain OAuth, see _agent_env) — no API key
+    # needed for it. The JUDGE is a direct Messages API call and DOES need the key.
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ANTHROPIC_API_KEY not set (needed for the judge and the agent).", file=sys.stderr)
+        print(
+            "ANTHROPIC_API_KEY not set — needed for the LLM judge "
+            "(faithfulness/answer_relevance). The agent itself uses your Claude "
+            "subscription via the claude CLI login, not this key.",
+            file=sys.stderr,
+        )
         return 1
 
     golden = load_golden(args.golden)
