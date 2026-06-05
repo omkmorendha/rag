@@ -54,6 +54,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -229,6 +230,62 @@ async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
     return answer, latency_ms, usage
 
 
+async def _score_row(
+    row: Any,
+    *,
+    model_id: str,
+    passages: dict[int, str],
+    judge: AnthropicJudge,
+    n: int,
+) -> tuple[QueryResult, dict]:
+    """Run one golden row through the agent + judge; return (result, raw_dict).
+
+    The agent call is async; the judge is a blocking SDK call, so it runs in a worker
+    thread (``asyncio.to_thread``) — that keeps the event loop free so multiple rows can
+    be in flight at once instead of serializing on the judge.
+    """
+    answer, latency_ms, usage = await _ask_agent(row.query, model_id)
+    cited = _cited_passage_ids(answer)
+    cited_ids = [f"passage:{pid}:recursive:0" for pid in cited]
+    cited_chunks = _cited_chunks(cited, passages)
+
+    # Substring answer check (same as pipeline). Empty answer => not measured.
+    answer_correct = answer_contains(answer, row.expected_answer) if answer else None
+
+    # Citation-based retrieval signals (agentic analogue of recall@k / precision@n):
+    # how well did the passages the agent *chose to cite* match the expected ones?
+    if cited_ids:
+        cite_recall = recall_at_k(cited_ids, row.expected_chunk_ids, len(cited_ids))
+        cite_precision = precision_at_n(cited_ids, row.expected_chunk_ids, n)
+    else:
+        cite_recall = 0.0
+        cite_precision = 0.0
+
+    result = QueryResult(
+        query=row.query,
+        recall_at_k=cite_recall,       # citation recall (best-effort agentic analogue)
+        mrr=0.0,                        # no ranked list in agentic retrieval; left 0
+        precision_at_n=cite_precision,  # precision of cited passages
+        answer_correct=answer_correct,
+        query_latency_ms=latency_ms,
+        generate_ms=latency_ms,         # the whole turn is the agent's "generation"
+    )
+
+    # Judge against the agent's cited passages (its self-reported grounding context).
+    # Run the blocking call off-loop so concurrent rows don't serialize on it.
+    score = await asyncio.to_thread(
+        judge.score, row.query, cited_chunks, row.expected_answer, answer
+    )
+    result.faithfulness = score.faithfulness
+    result.answer_relevance = score.answer_relevance
+
+    raw = result_to_dict(result)
+    raw["answer"] = answer
+    raw["cited_passages"] = cited
+    raw["usage"] = usage
+    return result, raw
+
+
 async def _run_model(
     label: str,
     model_id: str,
@@ -236,58 +293,41 @@ async def _run_model(
     passages: dict[int, str],
     judge: AnthropicJudge,
     n: int,
+    concurrency: int,
 ) -> dict:
-    """Run the whole golden set through one model tier and score every row."""
-    results: list[QueryResult] = []
-    raw_rows: list[dict] = []
+    """Run the whole golden set through one model tier, ``concurrency`` rows at a time.
 
-    for i, row in enumerate(golden, start=1):
-        answer, latency_ms, usage = await _ask_agent(row.query, model_id)
-        cited = _cited_passage_ids(answer)
-        cited_ids = [f"passage:{pid}:recursive:0" for pid in cited]
-        cited_chunks = _cited_chunks(cited, passages)
+    A semaphore caps how many agent turns run concurrently. ``gather`` preserves input
+    order, so the persisted ``results`` list stays in golden order regardless of which
+    rows finish first. Progress lines print as each row *completes* (so they may be
+    out of order on screen), each tagged with its golden index.
+    """
+    total = len(golden)
+    sem = asyncio.Semaphore(concurrency)
 
-        # Substring answer check (same as pipeline). Empty answer => not measured.
-        answer_correct = answer_contains(answer, row.expected_answer) if answer else None
-
-        # Citation-based retrieval signals (agentic analogue of recall@k / precision@n):
-        # how well did the passages the agent *chose to cite* match the expected ones?
-        if cited_ids:
-            cite_recall = recall_at_k(cited_ids, row.expected_chunk_ids, len(cited_ids))
-            cite_precision = precision_at_n(cited_ids, row.expected_chunk_ids, n)
-        else:
-            cite_recall = 0.0
-            cite_precision = 0.0
-
-        result = QueryResult(
-            query=row.query,
-            recall_at_k=cite_recall,       # citation recall (best-effort agentic analogue)
-            mrr=0.0,                        # no ranked list in agentic retrieval; left 0
-            precision_at_n=cite_precision,  # precision of cited passages
-            answer_correct=answer_correct,
-            query_latency_ms=latency_ms,
-            generate_ms=latency_ms,         # the whole turn is the agent's "generation"
-        )
-
-        # Judge against the agent's cited passages (its self-reported grounding context).
-        score = judge.score(row.query, cited_chunks, row.expected_answer, answer)
-        result.faithfulness = score.faithfulness
-        result.answer_relevance = score.answer_relevance
-
-        results.append(result)
-        raw = result_to_dict(result)
-        raw["answer"] = answer
-        raw["cited_passages"] = cited
-        raw["usage"] = usage
-        raw_rows.append(raw)
-
-        ac = "—" if answer_correct is None else ("Y" if answer_correct else "N")
+    async def _one(i: int, row: Any) -> tuple[QueryResult, dict]:
+        async with sem:
+            result, raw = await _score_row(
+                row,
+                model_id=model_id,
+                passages=passages,
+                judge=judge,
+                n=n,
+            )
+        ac = "—" if result.answer_correct is None else ("Y" if result.answer_correct else "N")
         print(
-            f"  [{label} {i:>2}/{len(golden)}] ans={ac} "
-            f"faith={score.faithfulness:.2f} rel={score.answer_relevance:.2f} "
-            f"cites={cited or '∅'} lat={latency_ms:.0f}ms",
+            f"  [{label} {i:>2}/{total}] ans={ac} "
+            f"faith={result.faithfulness:.2f} rel={result.answer_relevance:.2f} "
+            f"cites={raw['cited_passages'] or '∅'} lat={result.query_latency_ms:.0f}ms",
             flush=True,
         )
+        return result, raw
+
+    pairs = await asyncio.gather(
+        *(_one(i, row) for i, row in enumerate(golden, start=1))
+    )
+    results = [r for r, _ in pairs]   # in golden order (gather preserves order)
+    raw_rows = [raw for _, raw in pairs]
 
     summary = aggregate(results)
     return {"summary": summary, "results": raw_rows}
@@ -321,8 +361,13 @@ async def _main_async(args: argparse.Namespace) -> int:
     variants: dict[str, dict] = {}
     for label in selected:
         model_id = MODELS[label]
-        print(f"\n=== agent run: {label} ({model_id}) on {len(golden)} queries ===")
-        run = await _run_model(label, model_id, golden, passages, judge, args.n)
+        print(
+            f"\n=== agent run: {label} ({model_id}) on {len(golden)} queries "
+            f"(concurrency={args.concurrency}) ==="
+        )
+        run = await _run_model(
+            label, model_id, golden, passages, judge, args.n, args.concurrency
+        )
 
         run_dir = OUT_DIR / f"agent_{label}"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -376,6 +421,12 @@ def main() -> int:
     )
     parser.add_argument("--n", type=int, default=8, help="top-n for citation precision@n")
     parser.add_argument("--limit", type=int, default=None, help="cap queries (smoke test)")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        help="how many agent queries to run at once per tier (default: 3)",
+    )
     args = parser.parse_args()
     return asyncio.run(_main_async(args))
 
