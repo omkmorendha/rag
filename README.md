@@ -224,6 +224,16 @@ A full sweep of every technique available today lives in
 machine-readable numbers in `docs/experiment_results.json`). Regenerate with
 `uv run python scripts/run_experiments.py` then `scripts/plot_experiments.py`.
 
+A second, contrasting experiment — **agentic RAG**, where a Claude Agent (via the Claude
+Agent SDK) investigates the corpus itself instead of using the fixed retrieval pipeline,
+across model tiers — lives in
+[`docs/AGENT_EXPERIMENT_REPORT.md`](./docs/AGENT_EXPERIMENT_REPORT.md)
+(`docs/agent_experiment_results.json`). It runs entirely on a Claude subscription (no API
+key). Regenerate with `uv run python scripts/run_agent_experiments.py` then
+`scripts/plot_agent_experiments.py`. Headline: on this short-passage corpus a bigger model
+(haiku → sonnet) buys no quality, and agentic retrieval trades much cleaner citations for
+markedly lower faithfulness (it sometimes cites the wrong passage) and 4–15× the latency.
+
 **Caveats first:** the corpus is `rag-mini-wikipedia` (3,200 short single-fact passages) and
 the golden set is just **33 hand-verified queries**, each variant a **single run**. Treat
 every number as directional. Retrieval/rerank metrics are deterministic and reproduce
