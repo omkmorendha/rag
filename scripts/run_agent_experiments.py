@@ -12,7 +12,9 @@ What carries over from the pipeline:
 - the grounding/answer criteria (reused from ``rag.generator.anthropic.SYSTEM_PROMPT``),
   reframed to "explore the folder" instead of "answer from these chunks";
 - ``answer_correct`` — case-insensitive substring of the expected answer (``rag.eval.metrics``);
-- ``faithfulness`` + ``answer_relevance`` — the same ``AnthropicJudge`` (claude-haiku-4-5).
+- ``faithfulness`` + ``answer_relevance`` — the same judge rubric (claude-haiku-4-5),
+  but run through the Agent SDK on the subscription (``SubscriptionJudge``) so the whole
+  experiment stays off the metered API.
 
 What is *agentic-specific*:
 
@@ -31,17 +33,17 @@ Run:
     uv run python scripts/run_agent_experiments.py --models haiku  # one tier
     uv run python scripts/run_agent_experiments.py --limit 3       # smoke test
 
-Auth (two separate credentials, on purpose):
+Auth — the WHOLE experiment runs on your Claude subscription, nothing on the metered API:
 
-- the **agent** runs on your **Claude subscription** — the Agent SDK drives the ``claude``
-  CLI, which uses the OAuth login from ``claude /login`` (stored in the OS keychain). We
-  strip ``ANTHROPIC_API_KEY`` from the agent subprocess env (``_agent_env``) so it does NOT
-  fall back to the metered API;
-- the **judge** is a direct Messages API call and uses ``ANTHROPIC_API_KEY`` (from .env,
-  same as evaluate.py).
+- the **agent** runs via the Agent SDK, which drives the ``claude`` CLI and uses the OAuth
+  login from ``claude /login`` (stored in the OS keychain). We strip ``ANTHROPIC_API_KEY``
+  from the agent subprocess env (``_agent_env``) so it never falls back to the API;
+- the **judge** (``SubscriptionJudge``) scores via a one-shot SDK ``query`` too, same
+  stripped env — so it is on the subscription as well. (The old API-key judge,
+  ``rag.eval.judge.AnthropicJudge``, is unused here.)
 
-So: be logged in via ``claude /login`` (subscription) AND have ANTHROPIC_API_KEY in .env
-(for the judge). Needs the ``claude`` CLI on PATH.
+So: just be logged in via ``claude /login``. No ANTHROPIC_API_KEY needed. Needs the
+``claude`` CLI on PATH.
 """
 
 from __future__ import annotations
@@ -68,12 +70,12 @@ from claude_agent_sdk import (  # noqa: E402
 )
 
 from rag.eval import (  # noqa: E402
-    AnthropicJudge,
     QueryResult,
     aggregate,
     load_golden,
     result_to_dict,
 )
+from rag.eval.judge import JUDGE_SYSTEM, JudgeScore, _parse_score  # noqa: E402
 from rag.eval.metrics import answer_contains, precision_at_n, recall_at_k  # noqa: E402
 from rag.generator.anthropic import SYSTEM_PROMPT as PIPELINE_SYSTEM  # noqa: E402
 from rag.types import Chunk  # noqa: E402
@@ -90,6 +92,11 @@ MODELS = {
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-8",
 }
+
+# Retry policy for the agent turn — the subscription rate-limits (Opus on Pro especially),
+# surfaced as an SDK exception. Retry with exponential backoff before giving up on a row.
+AGENT_MAX_RETRIES = 4
+AGENT_RETRY_BACKOFF_S = 8.0
 
 # Reuse the pipeline's grounding criteria verbatim, then bolt on the "go explore the
 # folder yourself" framing — the answer/citation contract is identical so the judge scores
@@ -199,6 +206,52 @@ def _agent_env() -> dict[str, str]:
     return env
 
 
+class SubscriptionJudge:
+    """LLM-as-judge that runs on the Claude subscription, not the metered API.
+
+    Same rubric as ``rag.eval.judge.AnthropicJudge`` (it reuses ``JUDGE_SYSTEM`` and
+    ``_parse_score``), but it scores via a one-shot Agent SDK ``query`` instead of a direct
+    Messages API call — so the judge, like the agent, runs on the ``claude`` CLI login
+    (subscription) with no API key. This keeps the whole experiment on the sub and off the
+    metered API. Model defaults to haiku (cheap, the scoring task is simple). No tools: the
+    judge only reasons over the text it is handed.
+    """
+
+    def __init__(self, model: str = "claude-haiku-4-5") -> None:
+        self.model = model
+
+    async def score(
+        self,
+        query_text: str,
+        chunks: list[Chunk],
+        expected_answer: str,
+        answer: str,
+    ) -> JudgeScore:
+        context = "\n".join(f"- {c.text}" for c in chunks)
+        user = (
+            f"{JUDGE_SYSTEM}\n\n"
+            f"Question:\n{query_text}\n\n"
+            f"Retrieved chunks:\n{context}\n\n"
+            f"Expected answer:\n{expected_answer}\n\n"
+            f"Generated answer:\n{answer}"
+        )
+        options = ClaudeAgentOptions(
+            model=self.model,
+            system_prompt=JUDGE_SYSTEM,
+            allowed_tools=[],            # judge reasons over text only — no investigation
+            permission_mode="bypassPermissions",
+            max_turns=1,
+            env=_agent_env(),            # subscription auth (no API key)
+        )
+        parts: list[str] = []
+        async for message in query(prompt=user, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+        return _parse_score("".join(parts))
+
+
 async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
     """Run one golden query through the agent; return (answer, latency_ms, usage)."""
     options = ClaudeAgentOptions(
@@ -210,24 +263,37 @@ async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
         env=_agent_env(),  # subscription auth (no API key) — see _agent_env()
     )
 
-    answer_parts: list[str] = []
-    usage: dict = {}
+    # The subscription is rate-limited (notably Opus on Pro). The SDK surfaces this as an
+    # exception on a subsequent call, which would otherwise abort the whole tier. Retry the
+    # turn with exponential backoff; on persistent failure return an empty answer flagged
+    # via usage["error"] so the row is recorded as unanswered, not lost.
     t0 = time.perf_counter()
-    async for message in query(prompt=query_text, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    answer_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            usage = {
-                "cost_usd": getattr(message, "total_cost_usd", None),
-                "num_turns": getattr(message, "num_turns", None),
-                "duration_ms": getattr(message, "duration_ms", None),
-            }
+    last_error: str | None = None
+    for attempt in range(AGENT_MAX_RETRIES):
+        answer_parts: list[str] = []
+        usage: dict = {}
+        try:
+            async for message in query(prompt=query_text, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            answer_parts.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    usage = {
+                        "cost_usd": getattr(message, "total_cost_usd", None),
+                        "num_turns": getattr(message, "num_turns", None),
+                        "duration_ms": getattr(message, "duration_ms", None),
+                    }
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            answer = answer_parts[-1].strip() if answer_parts else ""
+            return answer, latency_ms, usage
+        except Exception as exc:  # noqa: BLE001 - retry transient rate-limit / SDK errors
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt < AGENT_MAX_RETRIES - 1:
+                await asyncio.sleep(AGENT_RETRY_BACKOFF_S * (2**attempt))
+
     latency_ms = (time.perf_counter() - t0) * 1000.0
-    # The final assistant text block(s) carry the answer; keep the last non-empty turn.
-    answer = answer_parts[-1].strip() if answer_parts else ""
-    return answer, latency_ms, usage
+    return "", latency_ms, {"error": last_error}
 
 
 async def _score_row(
@@ -235,14 +301,14 @@ async def _score_row(
     *,
     model_id: str,
     passages: dict[int, str],
-    judge: AnthropicJudge,
+    judge: SubscriptionJudge,
     n: int,
 ) -> tuple[QueryResult, dict]:
     """Run one golden row through the agent + judge; return (result, raw_dict).
 
-    The agent call is async; the judge is a blocking SDK call, so it runs in a worker
-    thread (``asyncio.to_thread``) — that keeps the event loop free so multiple rows can
-    be in flight at once instead of serializing on the judge.
+    Both the agent and the (subscription) judge are async SDK calls, so concurrent rows
+    overlap naturally on the event loop. A judge failure on one row is caught and recorded
+    as unscored (faithfulness/relevance left None) rather than aborting the whole tier.
     """
     answer, latency_ms, usage = await _ask_agent(row.query, model_id)
     cited = _cited_passage_ids(answer)
@@ -272,17 +338,22 @@ async def _score_row(
     )
 
     # Judge against the agent's cited passages (its self-reported grounding context).
-    # Run the blocking call off-loop so concurrent rows don't serialize on it.
-    score = await asyncio.to_thread(
-        judge.score, row.query, cited_chunks, row.expected_answer, answer
-    )
-    result.faithfulness = score.faithfulness
-    result.answer_relevance = score.answer_relevance
+    # A judge failure (parse error, transient SDK error) must not abort the whole tier —
+    # record the row as unscored and move on.
+    judge_error: str | None = None
+    try:
+        score = await judge.score(row.query, cited_chunks, row.expected_answer, answer)
+        result.faithfulness = score.faithfulness
+        result.answer_relevance = score.answer_relevance
+    except Exception as exc:  # noqa: BLE001 - one bad judge call shouldn't kill the run
+        judge_error = f"{type(exc).__name__}: {exc}"
 
     raw = result_to_dict(result)
     raw["answer"] = answer
     raw["cited_passages"] = cited
     raw["usage"] = usage
+    if judge_error:
+        raw["judge_error"] = judge_error
     return result, raw
 
 
@@ -291,9 +362,10 @@ async def _run_model(
     model_id: str,
     golden: list,
     passages: dict[int, str],
-    judge: AnthropicJudge,
+    judge: SubscriptionJudge,
     n: int,
     concurrency: int,
+    query_delay: float = 0.0,
 ) -> dict:
     """Run the whole golden set through one model tier, ``concurrency`` rows at a time.
 
@@ -301,11 +373,17 @@ async def _run_model(
     order, so the persisted ``results`` list stays in golden order regardless of which
     rows finish first. Progress lines print as each row *completes* (so they may be
     out of order on screen), each tagged with its golden index.
+
+    ``query_delay`` staggers row starts by ``delay * index`` seconds — used to pace a
+    rate-limited tier (e.g. Opus on Pro) well under the limit by spreading calls out in
+    time even at low concurrency.
     """
     total = len(golden)
     sem = asyncio.Semaphore(concurrency)
 
     async def _one(i: int, row: Any) -> tuple[QueryResult, dict]:
+        if query_delay:
+            await asyncio.sleep(query_delay * (i - 1))  # stagger starts (i is 1-based)
         async with sem:
             result, raw = await _score_row(
                 row,
@@ -315,9 +393,11 @@ async def _run_model(
                 n=n,
             )
         ac = "—" if result.answer_correct is None else ("Y" if result.answer_correct else "N")
+        faith = "ERR" if result.faithfulness is None else f"{result.faithfulness:.2f}"
+        rel = "ERR" if result.answer_relevance is None else f"{result.answer_relevance:.2f}"
         print(
             f"  [{label} {i:>2}/{total}] ans={ac} "
-            f"faith={result.faithfulness:.2f} rel={result.answer_relevance:.2f} "
+            f"faith={faith} rel={rel} "
             f"cites={raw['cited_passages'] or '∅'} lat={result.query_latency_ms:.0f}ms",
             flush=True,
         )
@@ -334,23 +414,16 @@ async def _run_model(
 
 
 async def _main_async(args: argparse.Namespace) -> int:
+    # Both the agent and the judge run on the subscription (see _agent_env / module
+    # docstring); no API key is required. We still load .env for any other settings, but it
+    # is not an error for ANTHROPIC_API_KEY to be absent.
     _load_dotenv()
-    # The AGENT runs on the subscription (keychain OAuth, see _agent_env) — no API key
-    # needed for it. The JUDGE is a direct Messages API call and DOES need the key.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            "ANTHROPIC_API_KEY not set — needed for the LLM judge "
-            "(faithfulness/answer_relevance). The agent itself uses your Claude "
-            "subscription via the claude CLI login, not this key.",
-            file=sys.stderr,
-        )
-        return 1
 
     golden = load_golden(args.golden)
     if args.limit:
         golden = golden[: args.limit]
     passages = _load_passages()
-    judge = AnthropicJudge()
+    judge = SubscriptionJudge()
 
     selected = args.models or list(MODELS)
     unknown = [m for m in selected if m not in MODELS]
@@ -358,7 +431,15 @@ async def _main_async(args: argparse.Namespace) -> int:
         print(f"unknown model(s): {unknown}. choose from {list(MODELS)}", file=sys.stderr)
         return 1
 
+    # Merge into any existing aggregated file so running a SUBSET of models (e.g.
+    # --models sonnet opus) preserves tiers saved by an earlier run (e.g. haiku).
     variants: dict[str, dict] = {}
+    if DOCS_JSON.exists():
+        try:
+            variants = json.loads(DOCS_JSON.read_text(encoding="utf-8")).get("variants", {})
+        except (json.JSONDecodeError, OSError):
+            variants = {}
+
     for label in selected:
         model_id = MODELS[label]
         print(
@@ -366,7 +447,14 @@ async def _main_async(args: argparse.Namespace) -> int:
             f"(concurrency={args.concurrency}) ==="
         )
         run = await _run_model(
-            label, model_id, golden, passages, judge, args.n, args.concurrency
+            label,
+            model_id,
+            golden,
+            passages,
+            judge,
+            args.n,
+            args.concurrency,
+            args.query_delay,
         )
 
         run_dir = OUT_DIR / f"agent_{label}"
@@ -426,6 +514,13 @@ def main() -> int:
         type=int,
         default=3,
         help="how many agent queries to run at once per tier (default: 3)",
+    )
+    parser.add_argument(
+        "--query-delay",
+        type=float,
+        default=0.0,
+        help="seconds to stagger each query's start by (paces a rate-limited tier; "
+        "e.g. --query-delay 30 --concurrency 1 for Opus on Pro)",
     )
     args = parser.parse_args()
     return asyncio.run(_main_async(args))
