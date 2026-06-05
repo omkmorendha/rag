@@ -41,6 +41,7 @@ from rag.registry import (  # noqa: E402
     build_embedder,
     build_generator,
     build_indexer,
+    build_query_transform,
     build_reranker,
     build_retriever,
     retriever_k,
@@ -91,6 +92,12 @@ def main() -> int:
     parser.add_argument(
         "--json", type=Path, default=None, help="dump full results as JSON"
     )
+    parser.add_argument(
+        "--warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="pay lazy model-load cost once before timing (use --no-warmup to skip)",
+    )
     args = parser.parse_args()
 
     _load_dotenv()
@@ -101,11 +108,23 @@ def main() -> int:
     index = build_indexer(path=args.config).load(args.vectorstore)
     embedder = build_embedder(path=args.config)
     retriever = build_retriever(index, embedder, path=args.config)
+    query_transform = build_query_transform(path=args.config)
     reranker = build_reranker(path=args.config)
     generator = (
         _NullGenerator() if args.no_generate else build_generator(path=args.config)
     )
     judge = AnthropicJudge() if args.judge else None
+
+    if args.warmup:
+        # Pay the lazy model-load cost (sentence-transformers embedder + cross-encoder
+        # reranker load on first call) so per-row latencies are steady-state. We never
+        # warm generation/judge — those hit the API and cost money. Guarded so a warmup
+        # failure never aborts the actual run.
+        try:
+            candidates = retriever.retrieve("warmup", k)
+            reranker.rerank("warmup", candidates)
+        except Exception as exc:  # noqa: BLE001 - warmup is best-effort
+            print(f"warmup skipped: {exc}", file=sys.stderr)
 
     results: list[QueryResult] = []
     for row in golden:
@@ -117,6 +136,7 @@ def main() -> int:
             k=k,
             n=args.n,
             judge=judge,
+            query_transform=query_transform,
         )
         results.append(result)
 
@@ -142,17 +162,35 @@ def _print_report(results: list[QueryResult], *, k: int, n: int, judged: bool) -
     for r in results:
         line = (
             f"  recall@{k}={r.recall_at_k:.2f}  mrr={r.mrr:.2f}  "
-            f"p@{n}={r.precision_at_n:.2f}  ans={'Y' if r.answer_correct else 'N'}"
+            f"p@{n}={r.precision_at_n:.2f}  "
+            f"ans={'—' if r.answer_correct is None else ('Y' if r.answer_correct else 'N')}"
         )
         if judged and r.faithfulness is not None:
             line += f"  faith={r.faithfulness:.2f}  rel={r.answer_relevance:.2f}"
+        if r.query_latency_ms is not None:
+            line += f"  lat={r.query_latency_ms:.0f}ms"
         print(f"- {r.query}")
         print(line)
 
     summary = aggregate(results)
     print("\n=== aggregate ===")
-    for key, value in summary.items():
-        print(f"  {key}: {value:.3f}")
+    for key in ("recall_at_k", "mrr", "precision_at_n", "answer_correct"):
+        if key in summary:
+            print(f"  {key}: {summary[key]:.3f}")
+    if "recall_at_5" in summary:
+        print(f"  recall@5: {summary['recall_at_5']:.3f}")
+    if "recall_at_10" in summary:
+        print(f"  recall@10: {summary['recall_at_10']:.3f}")
+    if "faithfulness" in summary:
+        print(f"  faithfulness: {summary['faithfulness']:.3f}")
+    if "answer_relevance" in summary:
+        print(f"  answer_relevance: {summary['answer_relevance']:.3f}")
+    if "query_latency_ms" in summary:
+        print(
+            f"  latency_ms: mean={summary['query_latency_ms']:.0f}  "
+            f"p50={summary.get('query_latency_ms_p50', 0.0):.0f}  "
+            f"p95={summary.get('query_latency_ms_p95', 0.0):.0f}"
+        )
 
 
 if __name__ == "__main__":

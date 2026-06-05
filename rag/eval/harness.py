@@ -10,6 +10,7 @@ The LLM judge (faithfulness + answer_relevance) is opt-in because it needs the A
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -56,9 +57,18 @@ class QueryResult:
     recall_at_k: float
     mrr: float
     precision_at_n: float
-    answer_correct: bool
+    answer_correct: bool | None  # None when generation was skipped (--no-generate)
     faithfulness: float | None = None
     answer_relevance: float | None = None
+    # Component 2: extra recall cutoffs (computed off the same retrieved id list).
+    recall_at_5: float | None = None
+    recall_at_10: float | None = None
+    # Component 2: per-stage wall-clock latency in milliseconds.
+    transform_ms: float | None = None
+    retrieve_ms: float | None = None
+    rerank_ms: float | None = None
+    generate_ms: float | None = None
+    query_latency_ms: float | None = None
 
 
 def evaluate_row(
@@ -70,22 +80,55 @@ def evaluate_row(
     k: int,
     n: int,
     judge: AnthropicJudge | None = None,
+    query_transform: Any | None = None,
 ) -> QueryResult:
-    """Run one golden row through retrieve → rerank → generate and score each stage."""
-    candidates = retriever.retrieve(row.query, k)
+    """Run one golden row through retrieve → rerank → generate and score each stage.
+
+    ``query_transform`` (optional; default ``None`` = no transform, exact back-compat)
+    rewrites the query *only for retrieval*. The transformed query is what gets embedded
+    and searched, but rerank, generation, and the judge all keep using the ORIGINAL
+    ``row.query`` — the system answers the question the user actually asked.
+    """
+    _t0 = time.perf_counter()
+    retrieval_query = (
+        query_transform.transform(row.query) if query_transform else row.query
+    )
+    transform_ms = (time.perf_counter() - _t0) * 1000.0
+
+    _t0 = time.perf_counter()
+    candidates = retriever.retrieve(retrieval_query, k)
+    retrieve_ms = (time.perf_counter() - _t0) * 1000.0
     retrieved_ids = [c.id for c in candidates]
 
+    _t0 = time.perf_counter()
     reranked = reranker.rerank(row.query, candidates)
+    rerank_ms = (time.perf_counter() - _t0) * 1000.0
     reranked_ids = [c.id for c in reranked]
 
+    _t0 = time.perf_counter()
     answer = generator.generate(row.query, reranked)
+    generate_ms = (time.perf_counter() - _t0) * 1000.0
+
+    query_latency_ms = transform_ms + retrieve_ms + rerank_ms + generate_ms
+
+    # An empty answer means generation was skipped (--no-generate / _NullGenerator);
+    # scoring a substring match against "" would report a misleading 0.0, so leave
+    # answer_correct unset (None → "not measured") in that case.
+    answer_correct = metrics.answer_contains(answer, row.expected_answer) if answer else None
 
     result = QueryResult(
         query=row.query,
         recall_at_k=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, k),
         mrr=metrics.mrr(retrieved_ids, row.expected_chunk_ids),
         precision_at_n=metrics.precision_at_n(reranked_ids, row.expected_chunk_ids, n),
-        answer_correct=metrics.answer_contains(answer, row.expected_answer),
+        answer_correct=answer_correct,
+        recall_at_5=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, 5),
+        recall_at_10=metrics.recall_at_k(retrieved_ids, row.expected_chunk_ids, 10),
+        transform_ms=transform_ms,
+        retrieve_ms=retrieve_ms,
+        rerank_ms=rerank_ms,
+        generate_ms=generate_ms,
+        query_latency_ms=query_latency_ms,
     )
 
     if judge is not None:
@@ -94,6 +137,23 @@ def evaluate_row(
         result.answer_relevance = score.answer_relevance
 
     return result
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Linear-interpolated percentile (``pct`` in [0, 100]) over ``values``.
+
+    Returns 0.0 for an empty list. Used for p50/p95 of query latency.
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    frac = rank - low
+    return ordered[low] + (ordered[high] - ordered[low]) * frac
 
 
 def aggregate(results: list[QueryResult]) -> dict[str, float]:
@@ -109,8 +169,37 @@ def aggregate(results: list[QueryResult]) -> dict[str, float]:
         "recall_at_k": mean([r.recall_at_k for r in results]),
         "mrr": mean([r.mrr for r in results]),
         "precision_at_n": mean([r.precision_at_n for r in results]),
-        "answer_correct": mean([1.0 if r.answer_correct else 0.0 for r in results]),
     }
+
+    # answer_correct is None when generation was skipped; only average measured rows so a
+    # --no-generate run reports no answer_correct rather than a misleading 0.0.
+    answered = [r.answer_correct for r in results if r.answer_correct is not None]
+    if answered:
+        summary["answer_correct"] = mean([1.0 if ok else 0.0 for ok in answered])
+
+    # Component 2: extra recall cutoffs (skip rows where they were not computed).
+    recall5 = [r.recall_at_5 for r in results if r.recall_at_5 is not None]
+    recall10 = [r.recall_at_10 for r in results if r.recall_at_10 is not None]
+    if recall5:
+        summary["recall_at_5"] = mean(recall5)
+    if recall10:
+        summary["recall_at_10"] = mean(recall10)
+
+    # Component 2: per-stage latency means (skip unset).
+    for field in ("transform_ms", "retrieve_ms", "rerank_ms", "generate_ms"):
+        vals = [getattr(r, field) for r in results if getattr(r, field) is not None]
+        if vals:
+            summary[field] = mean(vals)
+
+    # Component 2: end-to-end latency mean + p50/p95.
+    latencies = [
+        r.query_latency_ms for r in results if r.query_latency_ms is not None
+    ]
+    if latencies:
+        summary["query_latency_ms"] = mean(latencies)
+        summary["query_latency_ms_p50"] = _percentile(latencies, 50.0)
+        summary["query_latency_ms_p95"] = _percentile(latencies, 95.0)
+
     faith = [r.faithfulness for r in results if r.faithfulness is not None]
     rel = [r.answer_relevance for r in results if r.answer_relevance is not None]
     if faith:

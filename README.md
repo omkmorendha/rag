@@ -21,7 +21,7 @@ Two pipelines run at different times (ARCHITECTURE.md §0); the persisted index 
 ```
 ingest   load → parse → chunk → embed → index → persist to vectorstore/
                  (the scripts/*.py chain below)
-query    load index → retrieve → rerank → generate   (wired via rag/registry.py)
+query    load index → transform query → retrieve → rerank → generate  (wired via rag/registry.py)
 eval     run the golden set through the query path, score each stage separately
                  (evaluate.py)
 ```
@@ -131,6 +131,30 @@ Available strategies:
 - `dense` — semantic search over the vector index, embedding the query with the same
   encoder used at ingest; baseline.
 
+## Query transforms
+
+`config.yaml` optionally rewrites the *retrieval* query before it is embedded — the
+generator still answers the user's **original** question, so a poor transform costs retrieval
+quality but never correctness. Omit the block to default to the identity baseline.
+
+```yaml
+query_transform:
+  name: rewrite
+  model: claude-haiku-4-5
+```
+
+Available strategies:
+
+- `passthrough` — identity; the default when no block is present.
+- `rewrite` — Claude expands abbreviations, entities, and synonyms into one search query.
+- `step_back` — Claude generalizes a specific question into a broader one to retrieve
+  background.
+
+The LLM transforms are best-effort: an empty response *or any provider/network error* falls
+back to the original query, so a failed transform never aborts a sweep. The static system
+prompt is prompt-cached. On this corpus's terse factoid queries both transforms *hurt*
+ranking — see [Results](#results).
+
 ## Reranking
 
 `config.yaml` selects how candidates are re-scored and compressed before generation. A
@@ -193,6 +217,38 @@ Metrics:
 The golden set's `expected_chunk_ids` are **derived after ingest** and coupled to the active
 chunker, so regenerate it with `scripts/derive_golden.py` whenever the chunker changes.
 
+## Results
+
+A full sweep of every technique available today lives in
+[`docs/EXPERIMENT_REPORT.md`](./docs/EXPERIMENT_REPORT.md) (charts in `docs/figures/`,
+machine-readable numbers in `docs/experiment_results.json`). Regenerate with
+`uv run python scripts/run_experiments.py` then `scripts/plot_experiments.py`.
+
+**Caveats first:** the corpus is `rag-mini-wikipedia` (3,200 short single-fact passages) and
+the golden set is just **33 hand-verified queries**, each variant a **single run**. Treat
+every number as directional. Retrieval/rerank metrics are deterministic and reproduce
+exactly; generation/judge metrics (and the LLM transforms) vary run-to-run, with a measured
+noise floor of **~0.09** on `answer_correct` — deltas at or below that are noise, not effects.
+
+What the sweep establishes on *this* corpus:
+
+- **Dense retrieval already does the heavy lifting** — recall@5 ≈ 0.74, MRR ≈ 0.58 from
+  embeddings alone. The gold chunk is usually found and ranked high.
+- **The cross-encoder reranker buys no measurable quality here** and costs ~0.9 s/query: it
+  re-orders an identical candidate set, leaving recall/MRR untouched and nudging precision@n
+  *down* (0.106 → 0.087). On short single-fact passages it has little to fix.
+- **LLM query transforms (`rewrite`, `step_back`) hurt retrieval ranking** on terse factoid
+  queries — MRR 0.58 → 0.48 (rewrite) / 0.41 (step_back) — and add ~1.3 s/query. They're
+  built for verbose/conversational/multi-hop queries this golden set deliberately lacks.
+- **`recursive` ≈ `fixed`** on this corpus (clean short passages give structure-aware
+  splitting nothing to exploit); **`sentence_window`** trades retrieval recall for rerank
+  precision (recall@5 0.74 → 0.54, p@n 0.087 → 0.136) — useful only paired with
+  parent-document expansion, which this slice doesn't yet implement.
+
+The point isn't that these techniques are bad — every negative is plausibly a
+corpus/query-distribution artifact. It's that the harness *surfaces* which stage actually
+moved the numbers here, which is exactly what per-stage scoring exists to do.
+
 ## Status
 
 The full vertical slice and the eval harness are in (build order §6.1–6.2): Markdown →
@@ -200,6 +256,7 @@ recursive chunk → local embed → FAISS flat → dense retrieve → cross-enco
 grounded generate, plus `evaluate.py` scoring each stage. Every stage is swappable from
 `config.yaml`.
 
-Next, each gated behind "did eval improve?" (ARCHITECTURE.md §6): PDF parser, `hybrid_rrf`
-retrieval (dense + BM25), alternative chunkers, query transforms, and decoupled
-parent-document retrieval.
+Query transforms (`rewrite`, `step_back`) and the alternative chunkers are now in and
+measured (see [Results](#results)). Next, each gated behind "did eval improve?"
+(ARCHITECTURE.md §6): PDF parser, `hybrid_rrf` retrieval (dense + BM25), and decoupled
+parent-document retrieval (to pair with `sentence_window`).
