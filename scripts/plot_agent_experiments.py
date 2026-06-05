@@ -109,10 +109,19 @@ def plot_latency(rows: list[tuple[str, dict[str, Any]]], out_dir: Path) -> Path 
         ("query_latency_ms_p95", "p95", _COLORS[1], 1),
     ]
     for key, label, color, offset in series:
-        heights = [float(s.get(key) or 0.0) for _, s in rows]
-        bars = ax.bar(
-            [i + offset * width for i in x], heights, width, label=label, color=color
-        )
+        # A log axis cannot place a 0 (log(0) = -inf), so leave missing metrics out
+        # entirely rather than coercing them to 0.0 — only plot real values.
+        positions: list[float] = []
+        heights: list[float] = []
+        for i, (_, s) in enumerate(rows):
+            value = s.get(key)
+            if value is None:
+                continue
+            positions.append(i + offset * width)
+            heights.append(float(value))
+        if not heights:
+            continue
+        bars = ax.bar(positions, heights, width, label=label, color=color)
         ax.bar_label(bars, fmt="%.0f", fontsize=7, padding=1)
     ax.set_yscale("log")
     ax.set_ylabel("end-to-end latency per query (ms, log)")

@@ -98,6 +98,11 @@ MODELS = {
 AGENT_MAX_RETRIES = 4
 AGENT_RETRY_BACKOFF_S = 8.0
 
+# The agent investigates UNTRUSTED corpus files, so it gets read-only tools only — it must
+# not be able to write, edit, run shell commands, or reach the network on injected text.
+AGENT_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "LS"]
+AGENT_DISALLOWED_TOOLS = ["Bash", "Write", "Edit", "MultiEdit", "WebFetch", "WebSearch"]
+
 # Reuse the pipeline's grounding criteria verbatim, then bolt on the "go explore the
 # folder yourself" framing — the answer/citation contract is identical so the judge scores
 # the agent on the same terms as the pipeline generator.
@@ -118,8 +123,14 @@ turn with the answer only.
 </investigation>"""
 )
 
-# "[source: passage 334]", "[source: passage 12, 13]", "(source: passage 7)", etc.
-_CITE_RE = re.compile(r"passage\s+(\d+)", re.IGNORECASE)
+# Match only EXPLICIT citations, not prose mentions of a passage. The answer contract
+# (AGENT_SYSTEM) is "[source: passage NNN]", so require a "source:" prefix. One citation may
+# list several ids ("source: passage 12, 13") — capture the whole trailing id list, then
+# split it in _cited_passage_ids. This avoids counting prose like "as in passage 5".
+_CITE_RE = re.compile(
+    r"source\s*:?\s*passage\s+(\d+(?:\s*,\s*\d+)*)", re.IGNORECASE
+)
+_INT_RE = re.compile(r"\d+")
 
 
 def _load_dotenv() -> None:
@@ -158,14 +169,19 @@ def _load_passages() -> dict[int, str]:
 
 
 def _cited_passage_ids(answer: str) -> list[int]:
-    """Ordered, de-duplicated passage ids the agent cited in its answer."""
+    """Ordered, de-duplicated passage ids from explicit ``[source: passage ...]`` citations.
+
+    Each match's id group may be a comma-separated list ("passage 12, 13") — split it into
+    individual ids so multi-id citations count every passage, not just the first.
+    """
     seen: set[int] = set()
     out: list[int] = []
     for m in _CITE_RE.finditer(answer):
-        pid = int(m.group(1))
-        if pid not in seen:
-            seen.add(pid)
-            out.append(pid)
+        for token in _INT_RE.findall(m.group(1)):
+            pid = int(token)
+            if pid not in seen:
+                seen.add(pid)
+                out.append(pid)
     return out
 
 
@@ -256,9 +272,15 @@ async def _ask_agent(query_text: str, model_id: str) -> tuple[str, float, dict]:
     """Run one golden query through the agent; return (answer, latency_ms, usage)."""
     options = ClaudeAgentOptions(
         model=model_id,
-        cwd=str(DATA_DIR),  # agent investigates the data/ folder (full reins)
+        cwd=str(DATA_DIR),  # agent investigates the data/ folder
         system_prompt=AGENT_SYSTEM,
-        permission_mode="bypassPermissions",  # read-only investigation, no prompts
+        # The agent reads UNTRUSTED corpus files, so it must not be able to act on injected
+        # instructions. Restrict it to read-only investigation tools and explicitly deny the
+        # mutating/exfiltrating ones. The run is headless (no human to approve prompts), so
+        # we still auto-approve — but only tools on this allowlist can be auto-approved.
+        allowed_tools=AGENT_ALLOWED_TOOLS,
+        disallowed_tools=AGENT_DISALLOWED_TOOLS,
+        permission_mode="bypassPermissions",  # non-interactive; scope is the allowlist above
         max_turns=30,
         env=_agent_env(),  # subscription auth (no API key) — see _agent_env()
     )
@@ -469,17 +491,24 @@ async def _main_async(args: argparse.Namespace) -> int:
         (run_dir / "results.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"  wrote {run_dir / 'results.json'}")
 
+        # Store n PER VARIANT: precision@n is computed per run, and a merged file may hold
+        # variants computed with different n. A single file-level n would mislabel them.
         variants[f"agent_{label}"] = {
             "model": model_id,
             "eval_flags": ["--judge"],
+            "n": args.n,
             "summary": run["summary"],
         }
         _print_summary(label, run["summary"])
 
     DOCS_JSON.parent.mkdir(parents=True, exist_ok=True)
-    DOCS_JSON.write_text(
-        json.dumps({"variants": variants, "n": args.n}, indent=2) + "\n", encoding="utf-8"
-    )
+    payload: dict[str, Any] = {"variants": variants}
+    # Keep a top-level n only when every variant agrees (back-compat with the plot/consumers
+    # that read one); omit it when the merge mixes different n so nothing claims a false global.
+    ns = {v["n"] for v in variants.values() if "n" in v}
+    if len(ns) == 1:
+        payload["n"] = next(iter(ns))
+    DOCS_JSON.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"\nwrote aggregated {DOCS_JSON}")
     return 0
 
@@ -498,6 +527,14 @@ def _print_summary(label: str, summary: dict) -> None:
             print(f"    {key}: {summary[key]:.3f}")
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: an integer > 0 (precision@n and the semaphore both require it)."""
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
+    return ivalue
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN)
@@ -507,11 +544,13 @@ def main() -> int:
         default=None,
         help=f"subset of {list(MODELS)} (default: all three)",
     )
-    parser.add_argument("--n", type=int, default=8, help="top-n for citation precision@n")
+    parser.add_argument(
+        "--n", type=_positive_int, default=8, help="top-n for citation precision@n"
+    )
     parser.add_argument("--limit", type=int, default=None, help="cap queries (smoke test)")
     parser.add_argument(
         "--concurrency",
-        type=int,
+        type=_positive_int,
         default=3,
         help="how many agent queries to run at once per tier (default: 3)",
     )

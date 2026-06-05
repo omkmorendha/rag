@@ -5,6 +5,7 @@
       "eval_flags": [
         "--judge"
       ],
+      "n": 8,
       "summary": {
         "recall_at_k": 0.5454545454545454,
         "mrr": 0.0,
@@ -23,6 +24,7 @@
       "eval_flags": [
         "--judge"
       ],
+      "n": 8,
       "summary": {
         "recall_at_k": 0.4949494949494949,
         "mrr": 0.0,
